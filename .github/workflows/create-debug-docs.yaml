@@ -1,0 +1,96 @@
+name: Create Debug Docs (reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  export-ecad:
+    name: Export ECAD
+    runs-on: ubuntu-24.04
+    outputs:
+      project-name: ${{ steps.setup.outputs.project-name }}
+    steps:
+      - name: Setup
+        id: setup
+        uses: OE5XRX/HW-Module-CI/.github/actions/setup@main
+
+      - name: Inject BETA + git hash into PCB title block
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMIT=$(git rev-parse --short HEAD)
+          echo "Injecting BETA-${COMMIT} into *.kicad_*"
+          sed -i "s/<<HASH>>/BETA-${COMMIT}/g" *.kicad_*
+
+      - name: KiBot production export
+        uses: INTI-CMNB/KiBot@v2_k9
+        with:
+          config: _ci/kibot/production.kibot.yaml
+          dir: output
+          schema: ${{ steps.setup.outputs.project-name }}.kicad_sch
+          board:  ${{ steps.setup.outputs.project-name }}.kicad_pcb
+          verbose: 0
+
+      - name: Fix output directory permissions
+        shell: bash
+        run: sudo chmod -R a+w output/
+
+      - name: Generate stencil PNG from KiBot SVG
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install -r _ci/scripts/requirements.txt
+          python3 _ci/scripts/make_stencil_image.py \
+            "output/${{ steps.setup.outputs.project-name }}-stencil_top.svg" \
+            "output/${{ steps.setup.outputs.project-name }}-stencil_top.png"
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: production
+          path: output
+          if-no-files-found: error
+
+  collect-and-provide:
+    runs-on: ubuntu-24.04
+    needs: export-ecad
+    steps:
+      - name: Setup
+        uses: OE5XRX/HW-Module-CI/.github/actions/setup@main
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.1'
+          working-directory: doc
+          bundler-cache: true
+          cache-version: 0
+
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+        with:
+          generator_config_file: doc
+
+      - name: Build with Jekyll
+        shell: bash
+        run: cd doc && bundle exec jekyll build
+        env:
+          JEKYLL_ENV: production
+
+      - name: Download production artefacts into Jekyll output
+        uses: actions/download-artifact@v5
+        with:
+          name: production
+          path: doc/_site
+
+      - name: Deploy to gh-pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: gh-pages
+          folder: doc/_site
+          clean: true
