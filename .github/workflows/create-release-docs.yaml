@@ -17,8 +17,13 @@ jobs:
         run: |
           set -euo pipefail
           COMMIT=$(git rev-parse --short HEAD)
-          echo "Injecting ${GITHUB_REF_NAME}-${COMMIT} into *.kicad_*"
-          sed -i "s/<<HASH>>/${GITHUB_REF_NAME}-${COMMIT}/g" *.kicad_*
+          RAW="${GITHUB_REF_NAME}-${COMMIT}"
+          # Escape sed-replacement metacharacters (/, &, \). Tag names may legally
+          # contain `/` (e.g. `release/v1.2`); without escaping, sed would treat
+          # it as a delimiter change and abort.
+          REPLACEMENT=$(printf '%s' "$RAW" | sed -e 's/[\/&\\]/\\&/g')
+          echo "Injecting $RAW into *.kicad_*"
+          sed -i "s/<<HASH>>/${REPLACEMENT}/g" *.kicad_*
 
       - name: KiBot production export
         uses: INTI-CMNB/KiBot@v2_k9
@@ -44,7 +49,13 @@ jobs:
 
       - name: Copy doc/ files into output folder
         shell: bash
-        run: sudo cp doc/* output/ 2>/dev/null || true
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=( doc/* )
+          if [ "${#files[@]}" -gt 0 ]; then
+            sudo cp "${files[@]}" output/
+          fi
 
       - name: Upload artefacts
         uses: actions/upload-artifact@v4

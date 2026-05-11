@@ -18,6 +18,19 @@ Every consumer repo MUST have:
 
 That's it. No `scripts/`, no `Gemfile`, no `kibot.yaml`, no `doc/_config.yml` in the consumer repo — everything CI-related lives here.
 
+## Files overwritten at CI time (do not customize locally)
+
+The `setup` composite action copies the following files from this repo into each consumer's working tree at the start of every CI run, **overwriting anything the consumer ships under the same names without warning**:
+
+- `doc/_config.yml`
+- `doc/Gemfile`
+- `doc/favicon.ico`
+- `doc/Icon.png`
+
+Additionally, `doc/_data/project.yml` is **generated at runtime** by CI (containing the auto-detected project name). Consumers should keep this path in their `.gitignore` and never commit it.
+
+Consequence: do not maintain board-specific variants of these files in module repos. If you need to customize any of them (e.g., to add a Jekyll plugin), commit the change here in `HW-Module-CI` so every consumer picks it up via `@main`.
+
 ## Consumer-side workflow files
 
 Each consumer repo carries three workflows. They are nearly identical across all repos — only the `on:` triggers differ if you need to customise.
