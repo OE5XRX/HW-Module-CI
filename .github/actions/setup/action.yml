@@ -16,11 +16,11 @@ runs:
     - name: Checkout caller repository
       uses: actions/checkout@v4
 
-    - name: Checkout HW-Module-CI at the workflow SHA
+    - name: Checkout HW-Module-CI at main
       uses: actions/checkout@v4
       with:
         repository: OE5XRX/HW-Module-CI
-        ref: ${{ github.workflow_sha }}
+        ref: main
         path: _ci
 
     - name: Detect KiCad project name
