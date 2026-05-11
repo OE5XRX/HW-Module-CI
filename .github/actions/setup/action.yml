@@ -1,0 +1,57 @@
+name: Setup HW-Module-CI build environment
+description: >
+  Check out caller's repo and HW-Module-CI side by side, detect the KiCad
+  project name from the caller's repo root, and stage Jekyll assets into
+  the caller's doc/ directory. Output the detected project name for use
+  by downstream steps.
+
+outputs:
+  project-name:
+    description: Detected KiCad project basename (the part before .kicad_pro)
+    value: ${{ steps.detect.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout caller repository
+      uses: actions/checkout@v4
+
+    - name: Checkout HW-Module-CI at the workflow SHA
+      uses: actions/checkout@v4
+      with:
+        repository: OE5XRX/HW-Module-CI
+        ref: ${{ github.workflow_sha }}
+        path: _ci
+
+    - name: Detect KiCad project name
+      id: detect
+      shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        files=( *.kicad_pro )
+        if [ "${#files[@]}" -ne 1 ]; then
+          echo "::error::expected exactly one .kicad_pro at repo root, found ${#files[@]}: ${files[*]:-<none>}"
+          exit 1
+        fi
+        name="${files[0]%.kicad_pro}"
+        echo "Detected project name: $name"
+        echo "name=$name" >> "$GITHUB_OUTPUT"
+
+    - name: Stage Jekyll assets into caller's doc/
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ ! -f doc/index.md ]; then
+          echo "::error::caller has no doc/index.md — required for Jekyll build"
+          exit 1
+        fi
+        cp _ci/doc/_config.yml doc/_config.yml
+        cp _ci/doc/Gemfile     doc/Gemfile
+        cp _ci/doc/favicon.ico doc/favicon.ico
+        cp _ci/doc/Icon.png    doc/Icon.png
+        mkdir -p doc/_data
+        cat > doc/_data/project.yml <<EOF
+        name: ${{ steps.detect.outputs.name }}
+        EOF
+        echo "Staged Jekyll assets and wrote doc/_data/project.yml"
