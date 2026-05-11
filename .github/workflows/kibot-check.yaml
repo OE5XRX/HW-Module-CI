@@ -1,0 +1,22 @@
+name: KiBot Check (reusable)
+
+on:
+  workflow_call:
+
+jobs:
+  kibot_check:
+    name: ERC + DRC preflight
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Setup
+        id: setup
+        uses: OE5XRX/HW-Module-CI/.github/actions/setup@main
+
+      - name: KiBot ERC + DRC
+        uses: INTI-CMNB/KiBot@v2_k9
+        with:
+          config: _ci/kibot/test.kibot.yaml
+          dir: output
+          schema: ${{ steps.setup.outputs.project-name }}.kicad_sch
+          board:  ${{ steps.setup.outputs.project-name }}.kicad_pcb
+          verbose: 0
