@@ -3,9 +3,6 @@ name: Create Debug Docs (reusable)
 on:
   workflow_call:
 
-permissions:
-  contents: write
-
 jobs:
   export-ecad:
     name: Export ECAD
@@ -57,6 +54,8 @@ jobs:
   collect-and-provide:
     runs-on: ubuntu-24.04
     needs: export-ecad
+    permissions:
+      contents: write
     steps:
       - name: Setup
         uses: OE5XRX/HW-Module-CI/.github/actions/setup@main
