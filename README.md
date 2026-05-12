@@ -140,3 +140,39 @@ python3 -m py_compile scripts/inventree_sync/*.py
 ```
 
 There is no local "smoke test" — the workflows can only execute meaningfully when invoked from a consumer repo with a real KiCad project at its root.
+
+A `.github/workflows/ci.yaml` self-lint workflow runs on every PR to this repo: actionlint, `py_compile`, pip install dry-run on `scripts/requirements.txt`, and `yaml.safe_load` on every YAML we ship. Required check before merge to `main`.
+
+## Known gotchas
+
+Bugs we hit during the rollout. Documented so they don't get re-introduced.
+
+### `github.workflow_sha` does NOT refer to the called workflow
+
+Inside a reusable workflow (`on: workflow_call`), `github.workflow_sha` resolves to the **calling** workflow's SHA, not the SHA of this repo's workflow file. Trying to `actions/checkout` HW-Module-CI at that SHA fails with `remote error: upload-pack: not our ref <sha>` because the SHA only exists in the consumer's repo.
+
+→ The composite action checks out HW-Module-CI at `ref: main` (floating), matching the spec's `@main` pinning decision. Tiny race window when `main` moves between dispatch and checkout, accepted.
+
+History: `6a1d809` (discovered during FM migration smoke test).
+
+### `actions/configure-pages@v5` requires Pages to be pre-enabled
+
+The action fails with `Get Pages site failed. Please verify that the repository has Pages enabled` on any repo without GitHub Pages turned on. For repos that have never deployed gh-pages before, this is a chicken-and-egg problem (Pages source = `gh-pages` branch, but the branch doesn't exist yet — needs a deploy to create it; deploy is blocked by `configure-pages` failing).
+
+→ We use `JamesIves/github-pages-deploy-action@v4` which creates the gh-pages branch if missing. `configure-pages` was a holdover from the official Pages flow; its step output was never referenced downstream. Removed.
+
+History: `7915ada` (discovered during CM4Carrier migration smoke test).
+
+### Tag names with `/` or `&` break the `<<HASH>>` sed substitution
+
+`create-release-docs.yaml` injects `${GITHUB_REF_NAME}-${COMMIT}` into KiCad title blocks via `sed -i "s/<<HASH>>/.../g" *.kicad_*`. Release tag names can legally contain `/` (e.g. `release/v1.2`), `&`, or `\` — all of which sed treats as metacharacters in the replacement side.
+
+→ The replacement string is escaped via `printf '%s' "$RAW" | sed -e 's/[\/&\\]/\\&/g'` before being interpolated into the outer `sed -i`.
+
+### InvenTree sync runs LAST and non-blocking
+
+If InvenTree (the supplier-parts server) is down or misbehaves on release day, the BOM upload step fails — but the docs deploy to OE5XRX.github.io already happened in the prior step, and `continue-on-error: true` keeps the workflow from aborting. The InvenTree step shows red in the UI; re-run via `gh run rerun <id> --failed`.
+
+### File overwrites at CI time
+
+The `setup` composite action unconditionally copies `_ci/doc/{_config.yml,Gemfile,favicon.ico,Icon.png}` into the caller's `doc/`, overwriting whatever the consumer ships under the same names. **Do not maintain board-specific variants of these files in module repos** — customisations go here in HW-Module-CI so every consumer picks them up via `@main`.
