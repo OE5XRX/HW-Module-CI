@@ -69,12 +69,6 @@ jobs:
           bundler-cache: true
           cache-version: 0
 
-      - name: Setup Pages
-        id: pages
-        uses: actions/configure-pages@v5
-        with:
-          generator_config_file: doc
-
       - name: Build with Jekyll
         shell: bash
         run: cd doc && bundle exec jekyll build
