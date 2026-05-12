@@ -21,7 +21,7 @@ jobs:
           bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           echo "$PWD" >> "$GITHUB_PATH"
 
-      - name: actionlint (workflows + composite actions)
+      - name: actionlint (workflows only; composite actions covered by yaml.safe_load below)
         run: actionlint
 
       - name: Python syntax (compile)
