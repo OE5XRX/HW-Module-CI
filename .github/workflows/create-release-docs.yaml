@@ -23,7 +23,8 @@ jobs:
           # it as a delimiter change and abort.
           REPLACEMENT=$(printf '%s' "$RAW" | sed -e 's/[\/&\\]/\\&/g')
           echo "Injecting $RAW into *.kicad_*"
-          sed -i "s/<<HASH>>/${REPLACEMENT}/g" *.kicad_*
+          # `--` so a future *.kicad_* match starting with `-` can't be parsed as a sed option
+          sed -i "s/<<HASH>>/${REPLACEMENT}/g" -- *.kicad_*
 
       - name: KiBot production export
         uses: INTI-CMNB/KiBot@v2_k9

@@ -20,7 +20,8 @@ jobs:
           set -euo pipefail
           COMMIT=$(git rev-parse --short HEAD)
           echo "Injecting BETA-${COMMIT} into *.kicad_*"
-          sed -i "s/<<HASH>>/BETA-${COMMIT}/g" *.kicad_*
+          # `--` so a future *.kicad_* match starting with `-` can't be parsed as a sed option
+          sed -i "s/<<HASH>>/BETA-${COMMIT}/g" -- *.kicad_*
 
       - name: KiBot production export
         uses: INTI-CMNB/KiBot@v2_k9
