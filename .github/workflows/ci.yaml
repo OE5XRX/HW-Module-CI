@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint workflows and scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          bash <(curl -sSf https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          echo "$PWD" >> "$GITHUB_PATH"
+
+      - name: actionlint (workflows + composite actions)
+        run: actionlint
+
+      - name: Python syntax (compile)
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/bom_export.py scripts/make_stencil_image.py
+          python3 -m py_compile scripts/inventree_sync/*.py
+
+      - name: Python requirements install dry-run
+        run: |
+          set -euo pipefail
+          python3 -m pip install --dry-run -r scripts/requirements.txt
+
+      - name: YAML syntax (all configs)
+        run: |
+          set -euo pipefail
+          for f in \
+            .github/workflows/*.yaml \
+            .github/actions/setup/action.yml \
+            kibot/*.yaml \
+            doc/_config.yml \
+            scripts/inventree_sync/default_categories.yaml; do
+            python3 -c "import yaml; yaml.safe_load(open('$f'))"
+            echo "  ok: $f"
+          done
