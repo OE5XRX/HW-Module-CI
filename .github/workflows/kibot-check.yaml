@@ -13,10 +13,20 @@ jobs:
         uses: OE5XRX/HW-Module-CI/.github/actions/setup@main
 
       - name: KiBot ERC + DRC
-        uses: INTI-CMNB/KiBot@v2_k9
-        with:
-          config: _ci/kibot/test.kibot.yaml
-          dir: output
-          schema: ${{ steps.setup.outputs.project-name }}.kicad_sch
-          board:  ${{ steps.setup.outputs.project-name }}.kicad_pcb
-          verbose: 0
+        shell: bash
+        env:
+          PROJECT: ${{ steps.setup.outputs.project-name }}
+        run: |
+          set -euo pipefail
+          # Direct docker invocation bypasses INTI-CMNB/KiBot@v2_k9 which
+          # currently fails to download because KiBot's repo has Git-LFS
+          # reference test images and the LFS bandwidth is exhausted.
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workdir" \
+            -w /workdir \
+            setsoft/kicad_auto:ki9 \
+            kibot \
+              -c _ci/kibot/test.kibot.yaml \
+              -d output \
+              -e "${PROJECT}.kicad_sch" \
+              -b "${PROJECT}.kicad_pcb"

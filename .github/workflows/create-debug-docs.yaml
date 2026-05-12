@@ -24,13 +24,20 @@ jobs:
           sed -i "s/<<HASH>>/BETA-${COMMIT}/g" -- *.kicad_*
 
       - name: KiBot production export
-        uses: INTI-CMNB/KiBot@v2_k9
-        with:
-          config: _ci/kibot/production.kibot.yaml
-          dir: output
-          schema: ${{ steps.setup.outputs.project-name }}.kicad_sch
-          board:  ${{ steps.setup.outputs.project-name }}.kicad_pcb
-          verbose: 0
+        shell: bash
+        env:
+          PROJECT: ${{ steps.setup.outputs.project-name }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workdir" \
+            -w /workdir \
+            setsoft/kicad_auto:ki9 \
+            kibot \
+              -c _ci/kibot/production.kibot.yaml \
+              -d output \
+              -e "${PROJECT}.kicad_sch" \
+              -b "${PROJECT}.kicad_pcb"
 
       - name: Fix output directory permissions
         shell: bash
