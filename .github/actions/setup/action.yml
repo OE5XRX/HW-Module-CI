@@ -14,10 +14,10 @@ runs:
   using: composite
   steps:
     - name: Checkout caller repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Checkout HW-Module-CI at main
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         repository: OE5XRX/HW-Module-CI
         ref: main

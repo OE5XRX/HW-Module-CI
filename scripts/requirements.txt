@@ -1,7 +1,10 @@
-inventree
-requests
-beautifulsoup4
-Pillow
-numpy
-cairosvg
-PyYAML
+# Pinned to current stable versions. Bump intentionally via a HW-Module-CI PR
+# (`pip index versions <pkg>` to check latest) so consumer release workflows
+# stay reproducible — unpinned deps were causing random-day-breakage risk.
+inventree==0.23.1
+requests==2.34.0
+beautifulsoup4==4.14.3
+Pillow==12.2.0
+numpy==2.4.4
+cairosvg==2.9.0
+PyYAML==6.0.3

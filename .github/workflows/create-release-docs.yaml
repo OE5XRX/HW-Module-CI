@@ -23,7 +23,8 @@ jobs:
           # it as a delimiter change and abort.
           REPLACEMENT=$(printf '%s' "$RAW" | sed -e 's/[\/&\\]/\\&/g')
           echo "Injecting $RAW into *.kicad_*"
-          sed -i "s/<<HASH>>/${REPLACEMENT}/g" *.kicad_*
+          # `--` so a future *.kicad_* match starting with `-` can't be parsed as a sed option
+          sed -i "s/<<HASH>>/${REPLACEMENT}/g" -- *.kicad_*
 
       - name: KiBot production export
         uses: INTI-CMNB/KiBot@v2_k9
@@ -58,13 +59,29 @@ jobs:
           fi
 
       - name: Upload artefacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production
           path: output
           if-no-files-found: error
 
+      - name: Deploy to OE5XRX.github.io
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          token: ${{ secrets.DEPLOY_GH_TOKEN }}
+          repository-name: OE5XRX/OE5XRX.github.io
+          branch: main
+          folder: output
+          target-folder: docs/remote-station/hardware/${{ github.event.repository.name }}
+          clean: true
+
+      # Runs last and non-blocking: if InvenTree is down or misbehaves, the
+      # release artefacts are still uploaded and the docs deploy already
+      # succeeded. The step shows red in the UI and can be re-run via
+      # `gh run rerun <id> --failed`.
       - name: Generate parts on InvenTree server
+        if: always()
+        continue-on-error: true
         shell: bash
         env:
           INVENTREE_API_TOKEN: ${{ secrets.INVENTREE_API_TOKEN }}
@@ -80,13 +97,3 @@ jobs:
             --pcb_image      "output/${{ steps.setup.outputs.project-name }}-3D_top-without.png" \
             --assembly_image "output/${{ steps.setup.outputs.project-name }}-3D_top-with.png" \
             --stencil_image  "output/${{ steps.setup.outputs.project-name }}-stencil_top.png"
-
-      - name: Deploy to OE5XRX.github.io
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          token: ${{ secrets.DEPLOY_GH_TOKEN }}
-          repository-name: OE5XRX/OE5XRX.github.io
-          branch: main
-          folder: output
-          target-folder: docs/remote-station/hardware/${{ github.event.repository.name }}
-          clean: true

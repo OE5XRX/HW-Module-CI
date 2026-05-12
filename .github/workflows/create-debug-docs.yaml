@@ -3,9 +3,6 @@ name: Create Debug Docs (reusable)
 on:
   workflow_call:
 
-permissions:
-  contents: write
-
 jobs:
   export-ecad:
     name: Export ECAD
@@ -23,7 +20,8 @@ jobs:
           set -euo pipefail
           COMMIT=$(git rev-parse --short HEAD)
           echo "Injecting BETA-${COMMIT} into *.kicad_*"
-          sed -i "s/<<HASH>>/BETA-${COMMIT}/g" *.kicad_*
+          # `--` so a future *.kicad_* match starting with `-` can't be parsed as a sed option
+          sed -i "s/<<HASH>>/BETA-${COMMIT}/g" -- *.kicad_*
 
       - name: KiBot production export
         uses: INTI-CMNB/KiBot@v2_k9
@@ -48,7 +46,7 @@ jobs:
             "output/${{ steps.setup.outputs.project-name }}-stencil_top.png"
 
       - name: Upload artefacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production
           path: output
@@ -57,6 +55,8 @@ jobs:
   collect-and-provide:
     runs-on: ubuntu-24.04
     needs: export-ecad
+    permissions:
+      contents: write
     steps:
       - name: Setup
         uses: OE5XRX/HW-Module-CI/.github/actions/setup@main
@@ -76,7 +76,7 @@ jobs:
           JEKYLL_ENV: production
 
       - name: Download production artefacts into Jekyll output
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: production
           path: doc/_site
