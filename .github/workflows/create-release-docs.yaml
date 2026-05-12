@@ -35,7 +35,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workdir" \
             -w /workdir \
-            setsoft/kicad_auto:ki9 \
+            ghcr.io/inti-cmnb/kicad9_auto_full:1.8.5-7_k9.0.7_d13.2_b4.2.4LTS \
             kibot \
               -c _ci/kibot/production.kibot.yaml \
               -d output \
