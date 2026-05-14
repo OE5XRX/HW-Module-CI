@@ -12,19 +12,23 @@ jobs:
         id: setup
         uses: OE5XRX/HW-Module-CI/.github/actions/setup@main
 
-      - name: Inject release tag + git hash into PCB title block
+      - name: Inject release version into PCB title block
         shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          COMMIT=$(git rev-parse --short HEAD)
-          RAW="${GITHUB_REF_NAME}-${COMMIT}"
+          # Strip leading `v` from tag name, e.g. `v1.5` → `1.5`. Per the
+          # versioning spec (oe5xrx.org/docs/remote-station/hardware/versioning/)
+          # the PCB title block carries a pure semver, no `v` prefix, no SHA.
+          RAW="${REF_NAME#v}"
           # Escape sed-replacement metacharacters (/, &, \). Tag names may legally
-          # contain `/` (e.g. `release/v1.2`); without escaping, sed would treat
+          # contain `/` (e.g. `release/1.2`); without escaping, sed would treat
           # it as a delimiter change and abort.
           REPLACEMENT=$(printf '%s' "$RAW" | sed -e 's/[\/&\\]/\\&/g')
           echo "Injecting $RAW into *.kicad_*"
           # `--` so a future *.kicad_* match starting with `-` can't be parsed as a sed option
-          sed -i "s/<<HASH>>/${REPLACEMENT}/g" -- *.kicad_*
+          sed -i "s/<<VERSION>>/${REPLACEMENT}/g" -- *.kicad_*
 
       - name: KiBot production export
         shell: bash

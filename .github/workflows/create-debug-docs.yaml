@@ -21,7 +21,7 @@ jobs:
           COMMIT=$(git rev-parse --short HEAD)
           echo "Injecting BETA-${COMMIT} into *.kicad_*"
           # `--` so a future *.kicad_* match starting with `-` can't be parsed as a sed option
-          sed -i "s/<<HASH>>/BETA-${COMMIT}/g" -- *.kicad_*
+          sed -i "s/<<VERSION>>/BETA-${COMMIT}/g" -- *.kicad_*
 
       - name: KiBot production export
         shell: bash
