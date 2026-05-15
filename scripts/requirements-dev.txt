@@ -1,0 +1,4 @@
+# Dev-only dependencies for self-CI tests in this repo.
+# These do NOT get installed by consumer-repo release runs — those
+# install scripts/requirements.txt instead.
+pytest==9.0.3

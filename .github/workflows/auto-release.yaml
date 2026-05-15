@@ -1,0 +1,85 @@
+name: Auto-Release (reusable)
+
+on:
+  workflow_call:
+
+concurrency:
+  group: auto-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight (ERC + DRC)
+    uses: OE5XRX/HW-Module-CI/.github/workflows/kibot-check.yaml@main
+    secrets: inherit
+
+  release:
+    name: Compute version and create release
+    needs: preflight
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Branch guard — main only
+        shell: bash
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Auto-Release runs only from main, got '$REF'."
+            echo "Re-run the workflow with the Branch field set to main."
+            exit 1
+          fi
+
+      - name: Secret precheck — RELEASE_TRIGGER_TOKEN must be set
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.RELEASE_TRIGGER_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::Org secret RELEASE_TRIGGER_TOKEN is not set."
+            echo "Create a fine-grained PAT with:"
+            echo "  Repository access: HW-Module-* + HW-DebugBoard"
+            echo "  Permissions:       contents:write, actions:write"
+            echo "Add it as an org-level secret named"
+            echo "RELEASE_TRIGGER_TOKEN with visibility set to those repos."
+            exit 1
+          fi
+
+      - name: Setup (dual checkout + project detection)
+        id: setup
+        uses: OE5XRX/HW-Module-CI/.github/actions/setup@main
+
+      - name: Fetch full history and tags for diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The default checkout is shallow (depth=1) with no tags. Backfill
+          # both so the version-compute script can git-diff against the
+          # baseline tag.
+          git fetch --tags --prune --unshallow 2>/dev/null \
+            || git fetch --tags --prune
+
+      - name: Compute next version
+        id: compute
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TRIGGER_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 _ci/scripts/compute_next_version.py
+
+      - name: Create release
+        if: steps.compute.outputs.bump_type != 'none' && steps.compute.outputs.bump_type != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TRIGGER_TOKEN }}
+          NEXT_TAG: ${{ steps.compute.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$NEXT_TAG" \
+            --generate-notes \
+            --title "$NEXT_TAG"
+          echo "Created release $NEXT_TAG"

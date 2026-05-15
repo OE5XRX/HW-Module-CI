@@ -27,13 +27,23 @@ jobs:
       - name: Python syntax (compile)
         run: |
           set -euo pipefail
-          python3 -m py_compile scripts/bom_export.py scripts/make_stencil_image.py
+          python3 -m py_compile \
+            scripts/bom_export.py \
+            scripts/make_stencil_image.py \
+            scripts/compute_next_version.py
           python3 -m py_compile scripts/inventree_sync/*.py
 
       - name: Python requirements install dry-run
         run: |
           set -euo pipefail
           python3 -m pip install --dry-run -r scripts/requirements.txt
+          python3 -m pip install --dry-run -r scripts/requirements-dev.txt
+
+      - name: Install dev deps and run unit tests
+        run: |
+          set -euo pipefail
+          python3 -m pip install -r scripts/requirements-dev.txt
+          python3 -m pytest scripts/tests/ -v
 
       - name: YAML syntax (all configs)
         run: |
