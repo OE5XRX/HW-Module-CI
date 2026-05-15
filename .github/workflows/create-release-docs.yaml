@@ -73,6 +73,7 @@ jobs:
             sudo find doc -maxdepth 1 -type f \
               \( -name '*.md' -o -name '*.png' -o -name '*.jpg' \
                  -o -name '*.jpeg' -o -name '*.svg' -o -name '*.gif' \) \
+              ! -name 'Icon.png' \
               -exec cp {} output/ \;
           fi
 
