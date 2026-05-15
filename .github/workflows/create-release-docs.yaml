@@ -12,23 +12,34 @@ jobs:
         id: setup
         uses: OE5XRX/HW-Module-CI/.github/actions/setup@main
 
-      - name: Inject release version into PCB title block
+      - name: Inject release version into title blocks
         shell: bash
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # Strip leading `v` from tag name, e.g. `v1.5` → `1.5`. Per the
-          # versioning spec (oe5xrx.org/docs/remote-station/hardware/versioning/)
-          # the PCB title block carries a pure semver, no `v` prefix, no SHA.
-          RAW="${REF_NAME#v}"
-          # Escape sed-replacement metacharacters (/, &, \). Tag names may legally
-          # contain `/` (e.g. `release/1.2`); without escaping, sed would treat
-          # it as a delimiter change and abort.
-          REPLACEMENT=$(printf '%s' "$RAW" | sed -e 's/[\/&\\]/\\&/g')
-          echo "Injecting $RAW into *.kicad_*"
+          # Schematic title block: full MAJOR.MINOR (no v-prefix), e.g. "1.5".
+          # The schematic changes on every Minor bump, so the rev field
+          # tracks the full semver — readers can tell two schematic PDFs
+          # apart by their rev.
+          SCH_RAW="${REF_NAME#v}"
+          # PCB title block: MAJOR only with v-prefix, e.g. "v1". The PCB
+          # is byte-identical across an entire Major (Minor bumps don't
+          # touch *.kicad_pcb), and the website archive uses /v<MAJOR>/
+          # paths — so the silkscreen matches the physical hardware
+          # revision and the archive layout, not the per-Minor docs.
+          MAJOR="${SCH_RAW%%.*}"
+          PCB_RAW="v${MAJOR}"
+          # Escape sed-replacement metacharacters (/, &, \). Tag names may
+          # legally contain `/` (e.g. `release/1.2`); without escaping, sed
+          # would treat it as a delimiter change and abort.
+          esc() { printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'; }
+          SCH_REPLACEMENT=$(esc "$SCH_RAW")
+          PCB_REPLACEMENT=$(esc "$PCB_RAW")
+          echo "Injecting '$SCH_RAW' into *.kicad_sch and '$PCB_RAW' into *.kicad_pcb"
           # `--` so a future *.kicad_* match starting with `-` can't be parsed as a sed option
-          sed -i "s/<<VERSION>>/${REPLACEMENT}/g" -- *.kicad_*
+          sed -i "s/<<VERSION>>/${SCH_REPLACEMENT}/g" -- *.kicad_sch
+          sed -i "s/<<VERSION>>/${PCB_REPLACEMENT}/g" -- *.kicad_pcb
 
       - name: KiBot production export
         shell: bash
