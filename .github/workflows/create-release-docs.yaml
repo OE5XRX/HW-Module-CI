@@ -79,23 +79,6 @@ jobs:
           path: output
           if-no-files-found: error
 
-      - name: DEBUG — check DEPLOY_GH_TOKEN is visible
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
-        run: |
-          set -euo pipefail
-          echo "Token length: ${#TOKEN}"
-          if [ -z "${TOKEN:-}" ]; then
-            echo "::error::Empty token — secret not visible to this reusable workflow."
-            exit 1
-          fi
-          # First 4 chars only — enough to distinguish a GitHub PAT prefix
-          # (github_pat_..., ghp_..., or the rare classic style) without
-          # leaking the secret.
-          PREFIX="${TOKEN:0:4}"
-          echo "Token prefix: $PREFIX"
-
       - name: Deploy to OE5XRX.github.io
         uses: JamesIves/github-pages-deploy-action@v4
         with:
