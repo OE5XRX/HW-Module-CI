@@ -15,6 +15,13 @@ runs:
   steps:
     - name: Checkout caller repository
       uses: actions/checkout@v6
+      with:
+        # The default (true) writes GITHUB_TOKEN as a basic-auth helper for
+        # github.com into .git/config, which then takes priority over any
+        # explicit token a later step (e.g. JamesIves deploy) tries to use
+        # via embedded URL credentials. Disable so the explicit-token path
+        # works for cross-repo deploys.
+        persist-credentials: false
 
     - name: Checkout HW-Module-CI at main
       uses: actions/checkout@v6
