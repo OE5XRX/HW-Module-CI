@@ -183,7 +183,7 @@ History: `7915ada` (discovered during CM4Carrier migration smoke test).
 
 ### Tag names with `/` or `&` break the `<<VERSION>>` sed substitution
 
-`create-release-docs.yaml` injects the release tag (with leading `v` stripped, e.g. `v1.5` → `1.5`) into KiCad title blocks via `sed -i "s/<<VERSION>>/.../g" *.kicad_*`. Release tag names can legally contain `/` (e.g. `release/1.2`), `&`, or `\` — all of which sed treats as metacharacters in the replacement side.
+`create-release-docs.yaml` injects the release tag into KiCad title blocks via `sed -i "s/<<VERSION>>/.../g"`. **Different value per file type:** `*.kicad_sch` gets the full `MAJOR.MINOR` (e.g. `1.5`) so readers can tell schematic revisions apart; `*.kicad_pcb` gets `v<MAJOR>` only (e.g. `v1`) because the PCB is byte-identical across all Minor bumps and the silkscreen should match the physical hardware revision. Release tag names can legally contain `/` (e.g. `release/1.2`), `&`, or `\` — all of which sed treats as metacharacters in the replacement side.
 
 → The replacement string is escaped via `printf '%s' "$RAW" | sed -e 's/[\/&\\]/\\&/g'` before being interpolated into the outer `sed -i`.
 
