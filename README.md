@@ -4,6 +4,8 @@ Shared CI infrastructure for OE5XRX hardware module repositories.
 
 This repo holds the reusable GitHub workflows, KiBot configs, Python scripts, and Jekyll assets that every hardware module repo (`HW-Module-FMTransceiver`, `HW-Module-BusBoard`, `HW-Module-CM4Carrier`, `HW-Module-DeviceTester`, `HW-Module-PowerBoard`, plus `HW-DebugBoard`) consumes via thin wrapper workflows.
 
+The release model the Auto-Release workflow implements is documented at [oe5xrx.org/docs/remote-station/hardware/versioning/](https://oe5xrx.org/docs/remote-station/hardware/versioning/).
+
 ## Repository convention
 
 Every consumer repo MUST have:
@@ -81,6 +83,20 @@ jobs:
     secrets: inherit
 ```
 
+### `.github/workflows/auto-release.yaml`
+
+```yaml
+name: Auto-Release
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  call:
+    uses: OE5XRX/HW-Module-CI/.github/workflows/auto-release.yaml@main
+    secrets: inherit
+```
+
 ## Pinning policy
 
 Consumer workflows pin to `@main` (floating). Breaking changes pushed here affect all consumers immediately — coordinate before pushing destructive changes to `main`.
@@ -93,6 +109,7 @@ The release workflow expects these secrets to be available org-wide:
 - `INVENTREE_API_HOST`
 - `MOUSER_API_KEY`
 - `DEPLOY_GH_TOKEN`
+- `RELEASE_TRIGGER_TOKEN` — fine-grained PAT, `contents:write` + `actions:write`, scoped to the HW-Module-* repos. Used by the Auto-Release workflow so the created tag triggers the downstream `release: published` event (the default `GITHUB_TOKEN` would not).
 
 All four should have visibility `all` so any repo in the OE5XRX org can use them via `secrets: inherit`.
 
@@ -105,6 +122,7 @@ All four should have visibility `all` so any repo in the OE5XRX org can use them
     kibot-check.yaml               # ERC + DRC preflight
     create-debug-docs.yaml         # On push to main → publish to gh-pages of caller
     create-release-docs.yaml       # On release → deploy to OE5XRX.github.io + InvenTree sync
+    auto-release.yaml              # On workflow_dispatch → diff since last tag → gh release create
 kibot/
   production.kibot.yaml            # Full board production export
   test.kibot.yaml                  # ERC/DRC preflight only
@@ -115,9 +133,12 @@ doc/
   Icon.png
 scripts/
   bom_export.py                    # Push BOM to InvenTree on release
+  compute_next_version.py          # Decide next semver tag for Auto-Release
   make_stencil_image.py            # Post-process KiBot SVG → stencil PNG
   inventree_sync/                  # Package: KiCad→InvenTree part syncing
-  requirements.txt
+  requirements.txt                 # Runtime deps installed in release runs
+  requirements-dev.txt             # pytest, used only in HW-Module-CI self-CI
+  tests/                           # pytest suite for the helper scripts
 ```
 
 ## Local development
