@@ -35,7 +35,7 @@ Consequence: do not maintain board-specific variants of these files in module re
 
 ## Consumer-side workflow files
 
-Each consumer repo carries three workflows. They are nearly identical across all repos — only the `on:` triggers differ if you need to customise.
+Each consumer repo carries four workflows. They are nearly identical across all repos — only the `on:` triggers differ if you need to customise.
 
 ### `.github/workflows/kibot-check.yaml`
 
@@ -111,7 +111,7 @@ The release workflow expects these secrets to be available org-wide:
 - `DEPLOY_GH_TOKEN`
 - `RELEASE_TRIGGER_TOKEN` — fine-grained PAT, `contents:write` + `actions:write`, scoped to the HW-Module-* repos. Used by the Auto-Release workflow so the created tag triggers the downstream `release: published` event (the default `GITHUB_TOKEN` would not).
 
-All four should have visibility `all` so any repo in the OE5XRX org can use them via `secrets: inherit`.
+All five should have visibility `all` so any repo in the OE5XRX org can use them via `secrets: inherit`.
 
 ## Layout of this repo
 
