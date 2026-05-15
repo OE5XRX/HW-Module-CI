@@ -43,3 +43,17 @@ def find_baseline(tags: List[str]) -> Optional[Tuple[int, int, str]]:
         return None
     candidates.sort(reverse=True)
     return candidates[0]
+
+
+def decide_bump(files: List[str]) -> str:
+    """Return 'major', 'minor', or 'none' based on which files changed.
+
+    *.kicad_pcb (anywhere in the tree) wins over *.kicad_sch — a PCB
+    change always implies a Gerber set change, even if a schematic
+    change rode along on the same commit.
+    """
+    if any(f.endswith(".kicad_pcb") for f in files):
+        return "major"
+    if any(f.endswith(".kicad_sch") for f in files):
+        return "minor"
+    return "none"

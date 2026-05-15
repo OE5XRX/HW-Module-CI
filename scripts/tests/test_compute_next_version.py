@@ -33,3 +33,31 @@ def test_find_baseline_picks_highest_out_of_order():
 def test_find_baseline_ignores_malformed_tags():
     tags = ["release/v1.2", "v1.0-rc1", "v1.0", "weird"]
     assert cnv.find_baseline(tags) == (1, 0, "v1.0")
+
+
+# ---------------------------------------------------------------------------
+# decide_bump
+# ---------------------------------------------------------------------------
+
+def test_decide_bump_no_files_is_none():
+    assert cnv.decide_bump([]) == "none"
+
+
+def test_decide_bump_only_docs_is_none():
+    assert cnv.decide_bump(["doc/index.md", "README.md"]) == "none"
+
+
+def test_decide_bump_only_sch_is_minor():
+    assert cnv.decide_bump(["foo.kicad_sch"]) == "minor"
+
+
+def test_decide_bump_only_pcb_is_major():
+    assert cnv.decide_bump(["foo.kicad_pcb"]) == "major"
+
+
+def test_decide_bump_pcb_wins_over_sch():
+    assert cnv.decide_bump(["foo.kicad_pcb", "bar.kicad_sch"]) == "major"
+
+
+def test_decide_bump_nested_paths_match():
+    assert cnv.decide_bump(["subdir/board.kicad_pcb"]) == "major"
