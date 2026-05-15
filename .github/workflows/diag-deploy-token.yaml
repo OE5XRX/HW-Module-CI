@@ -1,0 +1,76 @@
+name: DIAG — inspect DEPLOY_GH_TOKEN
+
+# Temporary diagnostic workflow. Authenticates against the GitHub API as
+# the DEPLOY_GH_TOKEN bearer and dumps:
+#   - which identity the token resolves to (PAT owner vs github-actions[bot])
+#   - the token's effective permissions on a known-working repo (HW-Module-CI)
+#   - the token's effective permissions on the failing target (OE5XRX.github.io)
+#   - branch protection / ruleset state on OE5XRX.github.io
+#
+# Run via Actions → DIAG — inspect DEPLOY_GH_TOKEN → Run workflow.
+# Delete this file once the deploy-token issue is solved.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    name: API-probe the deploy token
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Token length + prefix sanity
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Token length: ${#TOKEN}"
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::Empty token"
+            exit 1
+          fi
+          echo "Token prefix: ${TOKEN:0:11}"
+
+      - name: Who am I (GET /user)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "--- gh api /user ---"
+          gh api /user --jq '{login, id, type, site_admin}'
+
+      - name: Permissions on HW-Module-CI (control)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "--- gh api /repos/OE5XRX/HW-Module-CI ---"
+          gh api /repos/OE5XRX/HW-Module-CI --jq '{name, permissions, visibility}'
+
+      - name: Permissions on OE5XRX.github.io (target)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "--- gh api /repos/OE5XRX/OE5XRX.github.io ---"
+          gh api /repos/OE5XRX/OE5XRX.github.io --jq '{name, permissions, visibility}'
+          echo ""
+          echo "--- read-only access check: list 3 branches ---"
+          gh api /repos/OE5XRX/OE5XRX.github.io/branches --jq '.[0:3] | map(.name)'
+
+      - name: Branch protection + Rulesets on OE5XRX.github.io
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "--- branch protection on main (if any) ---"
+          gh api /repos/OE5XRX/OE5XRX.github.io/branches/main/protection 2>&1 \
+            || echo "(no classic branch protection — could still be a Ruleset)"
+          echo ""
+          echo "--- rulesets on the repo ---"
+          gh api /repos/OE5XRX/OE5XRX.github.io/rulesets --jq '.[] | {id, name, target, enforcement}' 2>&1 \
+            || echo "(no rulesets readable)"
