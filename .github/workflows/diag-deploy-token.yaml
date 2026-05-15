@@ -71,6 +71,49 @@ jobs:
           gh api /repos/OE5XRX/OE5XRX.github.io/branches/main/protection 2>&1 \
             || echo "(no classic branch protection — could still be a Ruleset)"
           echo ""
-          echo "--- rulesets on the repo ---"
-          gh api /repos/OE5XRX/OE5XRX.github.io/rulesets --jq '.[] | {id, name, target, enforcement}' 2>&1 \
-            || echo "(no rulesets readable)"
+          echo "--- rulesets on the repo (raw) ---"
+          gh api /repos/OE5XRX/OE5XRX.github.io/rulesets 2>&1 || true
+
+      - name: Actual git push test to a throwaway branch
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          BRANCH="diag-token-test-$(date +%s)"
+          echo "Test branch: $BRANCH"
+          cd "$(mktemp -d)"
+          # Clone with token in URL (HTTP basic auth — same as JamesIves does)
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/OE5XRX/OE5XRX.github.io.git" repo 2>&1 | grep -v "^Cloning" || true
+          cd repo
+          git config user.name "diag-token-test"
+          git config user.email "diag@oe5xrx.local"
+          git checkout -b "$BRANCH"
+          # No-op commit so we can push
+          echo "diag-marker-$(date -u +%FT%TZ)" > .diag-marker
+          git add .diag-marker
+          git commit -m "diag: token push test (will be deleted)" --quiet
+          echo "--- push attempt ---"
+          if git push origin "$BRANCH" 2>&1; then
+            echo "::notice::PUSH SUCCEEDED — token can push branches"
+            # Clean up: delete the remote branch
+            git push origin --delete "$BRANCH" 2>&1 || echo "(could not delete remote test branch — please clean up manually)"
+          else
+            echo "::error::PUSH FAILED — see error above"
+            exit 1
+          fi
+
+      - name: Org-level PAT settings hint
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "--- org-level PAT policy on OE5XRX ---"
+          gh api /orgs/OE5XRX --jq '{login, members_can_create_repositories, members_can_create_internal_repositories, two_factor_requirement_enabled}' 2>&1 || true
+          echo ""
+          echo "Note: OE5XRX may have 'Restrict access via fine-grained PATs' set under"
+          echo "  Settings → Third-party Access → Personal access tokens"
+          echo "If that policy requires PAT approval per repo, the token shows admin"
+          echo "via API but git operations may still be silently blocked."
