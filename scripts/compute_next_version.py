@@ -122,7 +122,7 @@ def main() -> int:
     if bump == "none":
         print(
             f"::notice::No release needed since {tag} "
-            "(only docs/CI changes)."
+            "(no *.kicad_pcb or *.kicad_sch changes)."
         )
         write_outputs(bump_type="none")
         return 0
