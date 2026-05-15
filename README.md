@@ -108,10 +108,9 @@ The release workflow expects these secrets to be available org-wide:
 - `INVENTREE_API_TOKEN`
 - `INVENTREE_API_HOST`
 - `MOUSER_API_KEY`
-- `DEPLOY_GH_TOKEN`
-- `RELEASE_TRIGGER_TOKEN` — fine-grained PAT, `contents:write` + `actions:write`, scoped to the HW-Module-* repos. Used by the Auto-Release workflow so the created tag triggers the downstream `release: published` event (the default `GITHUB_TOKEN` would not).
+- `DEPLOY_GH_TOKEN` — fine-grained PAT with `contents:write` (deploy to `OE5XRX.github.io`) **and** `actions:write` (so Auto-Release-created tags trigger the downstream `release: published` event — the default `GITHUB_TOKEN` would not).
 
-All five should have visibility `all` so any repo in the OE5XRX org can use them via `secrets: inherit`.
+All four should have visibility `all` so any repo in the OE5XRX org can use them via `secrets: inherit`.
 
 ## Layout of this repo
 
