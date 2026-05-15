@@ -15,8 +15,10 @@ manually before the auto-release can take over.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
 from typing import List, Optional, Tuple
 
 TAG_RE = re.compile(r"^v(\d+)\.(\d+)$")
@@ -75,3 +77,26 @@ def write_outputs(**kwargs: str) -> None:
     with open(path, "a", encoding="utf-8") as f:
         for k, v in kwargs.items():
             f.write(f"{k}={v}\n")
+
+
+def list_release_tags() -> List[str]:
+    """Return all release tag names from the current repo via the gh CLI.
+
+    Runs `gh release list --json tagName --limit 100`. The gh CLI infers
+    the repo from the current working directory's git remote — we're
+    inside the caller's checkout so this targets the right repo.
+    """
+    out = subprocess.check_output(
+        ["gh", "release", "list", "--json", "tagName", "--limit", "100"],
+        text=True,
+    )
+    return [entry["tagName"] for entry in json.loads(out)]
+
+
+def changed_files(since_tag: str) -> List[str]:
+    """Return list of filenames changed between since_tag..HEAD."""
+    out = subprocess.check_output(
+        ["git", "diff", "--name-only", f"{since_tag}..HEAD"],
+        text=True,
+    )
+    return [line for line in out.splitlines() if line.strip()]

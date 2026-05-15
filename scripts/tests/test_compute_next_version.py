@@ -93,3 +93,61 @@ def test_write_outputs_without_env_falls_back_to_stdout(
     cnv.write_outputs(bump_type="major")
     captured = capsys.readouterr()
     assert "bump_type=major" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# list_release_tags
+# ---------------------------------------------------------------------------
+
+def test_list_release_tags_parses_gh_json(monkeypatch):
+    import json
+    import subprocess
+
+    captured_args = {}
+
+    def fake(args, *a, **kw):
+        captured_args["args"] = list(args)
+        return json.dumps([
+            {"tagName": "v1.0"},
+            {"tagName": "v0.9"},
+            {"tagName": "v2.0"},
+        ])
+
+    monkeypatch.setattr(subprocess, "check_output", fake)
+    result = cnv.list_release_tags()
+    assert result == ["v1.0", "v0.9", "v2.0"]
+    assert captured_args["args"][:2] == ["gh", "release"]
+
+
+def test_list_release_tags_empty(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **kw: "[]")
+    assert cnv.list_release_tags() == []
+
+
+# ---------------------------------------------------------------------------
+# changed_files
+# ---------------------------------------------------------------------------
+
+def test_changed_files_parses_git_diff(monkeypatch):
+    import subprocess
+
+    captured_args = {}
+
+    def fake(args, *a, **kw):
+        captured_args["args"] = list(args)
+        return "foo.kicad_pcb\nbar.kicad_sch\n"
+
+    monkeypatch.setattr(subprocess, "check_output", fake)
+    result = cnv.changed_files("v1.5")
+    assert result == ["foo.kicad_pcb", "bar.kicad_sch"]
+    assert "v1.5..HEAD" in captured_args["args"]
+
+
+def test_changed_files_strips_empty_lines(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(
+        subprocess, "check_output",
+        lambda *a, **kw: "foo.kicad_pcb\n\n   \nbar.kicad_sch\n",
+    )
+    assert cnv.changed_files("v1.5") == ["foo.kicad_pcb", "bar.kicad_sch"]
