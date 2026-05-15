@@ -59,18 +59,43 @@ jobs:
             "output/${{ steps.setup.outputs.project-name }}-stencil_top.svg" \
             "output/${{ steps.setup.outputs.project-name }}-stencil_top.png"
 
-      - name: Copy doc/ files into output folder
+      - name: Copy consumer-authored content into output folder
         shell: bash
         run: |
           set -euo pipefail
-          # Copy only the regular files the consumer maintains in doc/
-          # (index.md, screenshots, etc.). Skip subdirectories — the
-          # setup composite action creates doc/_data/ at runtime with
-          # the auto-detected project.yml, which we don't want in the
+          # Only the files the consumer actually authored — NOT the Jekyll
+          # staging files the setup composite action copies into doc/ at
+          # build time (_config.yml, Gemfile, favicon.ico, Icon.png) and NOT
+          # the runtime _data/project.yml. Those exist solely for the local
+          # debug-docs Jekyll build and have no business in the cross-repo
           # deploy artefact.
           if [ -d doc ]; then
-            sudo find doc -maxdepth 1 -type f -exec cp {} output/ \;
+            sudo find doc -maxdepth 1 -type f \
+              \( -name '*.md' -o -name '*.png' -o -name '*.jpg' \
+                 -o -name '*.jpeg' -o -name '*.svg' -o -name '*.gif' \) \
+              -exec cp {} output/ \;
           fi
+
+      - name: Resolve Liquid placeholders in deployed markdown
+        shell: bash
+        env:
+          PROJECT: ${{ steps.setup.outputs.project-name }}
+        run: |
+          set -euo pipefail
+          # The deployed *.md ships raw to oe5xrx.org's Jekyll, which doesn't
+          # see the per-build doc/_data/project.yml that the setup composite
+          # action writes (that file lives only in the consumer-side worktree
+          # for debug-docs builds). Resolve the placeholders here so the
+          # deployed links come out as PowerBoard-schematic.pdf, not
+          # -schematic.pdf.
+          shopt -s nullglob
+          for f in output/*.md; do
+            sudo sed -i \
+              -e "s|{{ site.data.project.name }}|${PROJECT}|g" \
+              -e "s|{{ site\.data\['hash'\] }}||g" \
+              -e "s|{{ site.data.hash }}||g" \
+              "$f"
+          done
 
       - name: Upload artefacts
         uses: actions/upload-artifact@v7
