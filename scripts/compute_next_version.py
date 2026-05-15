@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from typing import List, Optional, Tuple
 
 TAG_RE = re.compile(r"^v(\d+)\.(\d+)$")
@@ -100,3 +101,39 @@ def changed_files(since_tag: str) -> List[str]:
         text=True,
     )
     return [line for line in out.splitlines() if line.strip()]
+
+
+EXIT_NO_BASELINE = 2  # nothing released yet; bootstrap needed
+
+
+def main() -> int:
+    tags = list_release_tags()
+    baseline = find_baseline(tags)
+    if baseline is None:
+        print(
+            "::error::No managed release (v<MAJOR>.<MINOR> with MAJOR>=1) "
+            "found. Bootstrap manually:\n"
+            "  gh release create v1.0 --generate-notes"
+        )
+        return EXIT_NO_BASELINE
+    major, minor, tag = baseline
+    files = changed_files(tag)
+    bump = decide_bump(files)
+    if bump == "none":
+        print(
+            f"::notice::No release needed since {tag} "
+            "(only docs/CI changes)."
+        )
+        write_outputs(bump_type="none")
+        return 0
+    if bump == "major":
+        next_tag = f"v{major + 1}.0"
+    else:  # minor
+        next_tag = f"v{major}.{minor + 1}"
+    print(f"::notice::{bump.upper()} bump: {tag} -> {next_tag}")
+    write_outputs(next_tag=next_tag, bump_type=bump)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

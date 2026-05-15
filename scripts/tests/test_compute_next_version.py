@@ -151,3 +151,93 @@ def test_changed_files_strips_empty_lines(monkeypatch):
         lambda *a, **kw: "foo.kicad_pcb\n\n   \nbar.kicad_sch\n",
     )
     assert cnv.changed_files("v1.5") == ["foo.kicad_pcb", "bar.kicad_sch"]
+
+
+# ---------------------------------------------------------------------------
+# main — end-to-end orchestration
+# ---------------------------------------------------------------------------
+
+def _stub_subprocess(monkeypatch, tags, changed):
+    """Stub subprocess.check_output for both gh release list and git diff."""
+    import json
+    import subprocess
+
+    payload = json.dumps([{"tagName": t} for t in tags])
+    diff_out = "\n".join(changed) + ("\n" if changed else "")
+
+    def fake(args, *a, **kw):
+        if args[:2] == ["gh", "release"]:
+            return payload
+        if args[:2] == ["git", "diff"]:
+            return diff_out
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    monkeypatch.setattr(subprocess, "check_output", fake)
+
+
+def test_main_no_releases_exits_2(monkeypatch, capsys):
+    _stub_subprocess(monkeypatch, tags=[], changed=[])
+    rc = cnv.main()
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "::error::" in captured.out
+    assert "gh release create v1.0 --generate-notes" in captured.out
+
+
+def test_main_only_legacy_v0_exits_2(monkeypatch, capsys):
+    _stub_subprocess(monkeypatch, tags=["v0.1", "v0.9"], changed=[])
+    rc = cnv.main()
+    assert rc == 2
+
+
+def test_main_no_bump_writes_none(monkeypatch, tmp_path, capsys):
+    out_file = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+    _stub_subprocess(
+        monkeypatch, tags=["v1.5"], changed=["doc/index.md"]
+    )
+    rc = cnv.main()
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "::notice::" in captured.out
+    assert "bump_type=none" in out_file.read_text()
+
+
+def test_main_minor_bump(monkeypatch, tmp_path):
+    out_file = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+    _stub_subprocess(
+        monkeypatch, tags=["v1.5"], changed=["board.kicad_sch"]
+    )
+    rc = cnv.main()
+    content = out_file.read_text()
+    assert rc == 0
+    assert "bump_type=minor" in content
+    assert "next_tag=v1.6" in content
+
+
+def test_main_major_bump(monkeypatch, tmp_path):
+    out_file = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+    _stub_subprocess(
+        monkeypatch, tags=["v1.5"], changed=["board.kicad_pcb"]
+    )
+    rc = cnv.main()
+    content = out_file.read_text()
+    assert rc == 0
+    assert "bump_type=major" in content
+    assert "next_tag=v2.0" in content
+
+
+def test_main_out_of_order_tags_uses_highest(monkeypatch, tmp_path):
+    out_file = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+    _stub_subprocess(
+        monkeypatch,
+        tags=["v1.0", "v2.0", "v1.5"],
+        changed=["board.kicad_sch"],
+    )
+    rc = cnv.main()
+    content = out_file.read_text()
+    assert rc == 0
+    assert "next_tag=v2.1" in content
