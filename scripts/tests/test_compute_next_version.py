@@ -61,3 +61,35 @@ def test_decide_bump_pcb_wins_over_sch():
 
 def test_decide_bump_nested_paths_match():
     assert cnv.decide_bump(["subdir/board.kicad_pcb"]) == "major"
+
+
+# ---------------------------------------------------------------------------
+# write_outputs
+# ---------------------------------------------------------------------------
+
+def test_write_outputs_to_github_output(monkeypatch, tmp_path):
+    out_file = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+    cnv.write_outputs(next_tag="v1.6", bump_type="minor")
+    content = out_file.read_text()
+    assert "next_tag=v1.6" in content
+    assert "bump_type=minor" in content
+
+
+def test_write_outputs_appends_not_overwrites(monkeypatch, tmp_path):
+    out_file = tmp_path / "github_output"
+    out_file.write_text("preset=keep\n")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+    cnv.write_outputs(bump_type="none")
+    content = out_file.read_text()
+    assert "preset=keep" in content
+    assert "bump_type=none" in content
+
+
+def test_write_outputs_without_env_falls_back_to_stdout(
+    monkeypatch, capsys
+):
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    cnv.write_outputs(bump_type="major")
+    captured = capsys.readouterr()
+    assert "bump_type=major" in captured.out

@@ -15,6 +15,7 @@ manually before the auto-release can take over.
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import List, Optional, Tuple
 
@@ -57,3 +58,20 @@ def decide_bump(files: List[str]) -> str:
     if any(f.endswith(".kicad_sch") for f in files):
         return "minor"
     return "none"
+
+
+def write_outputs(**kwargs: str) -> None:
+    """Append KEY=VALUE pairs to $GITHUB_OUTPUT, or stdout fallback.
+
+    The stdout fallback exists so the script is debuggable in a local
+    shell — running it without GITHUB_OUTPUT set prints the same
+    KEY=VALUE lines and doesn't silently swallow them.
+    """
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        for k, v in kwargs.items():
+            print(f"{k}={v}")
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        for k, v in kwargs.items():
+            f.write(f"{k}={v}\n")
