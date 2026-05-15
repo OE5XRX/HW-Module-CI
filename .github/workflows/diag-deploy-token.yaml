@@ -1,0 +1,100 @@
+name: DIAG — inspect DEPLOY_GH_TOKEN
+
+# Temporary diagnostic workflow. Reproduces what JamesIves's deploy
+# action does step-by-step so we can pinpoint which exact action fails.
+# Delete this file once the deploy-token issue is solved.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  push_styles:
+    name: Try various push styles
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Token sanity
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Token length: ${#TOKEN}"
+          echo "Token prefix: ${TOKEN:0:11}"
+
+      - name: Test 1 — regular push (new branch)
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd "$(mktemp -d)"
+          BRANCH="diag-test1-$(date +%s)"
+          echo "Branch: $BRANCH"
+          git clone --quiet --depth 1 \
+            "https://x-access-token:${TOKEN}@github.com/OE5XRX/OE5XRX.github.io.git" repo
+          cd repo
+          git config user.name "diag"
+          git config user.email "diag@oe5xrx.local"
+          git checkout -b "$BRANCH"
+          echo "marker-$(date -u +%FT%TZ)" > .diag-marker-1
+          git add .diag-marker-1
+          git commit -m "diag1 regular push" --quiet
+          git push origin "$BRANCH" 2>&1 && echo "Test 1 PASS" || echo "Test 1 FAIL"
+          git push origin --delete "$BRANCH" 2>&1 || true
+
+      - name: Test 2 — force push to a NEW branch
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd "$(mktemp -d)"
+          BRANCH="diag-test2-$(date +%s)"
+          git clone --quiet --depth 1 \
+            "https://x-access-token:${TOKEN}@github.com/OE5XRX/OE5XRX.github.io.git" repo
+          cd repo
+          git config user.name "diag"
+          git config user.email "diag@oe5xrx.local"
+          git checkout -b "$BRANCH"
+          echo "marker-$(date -u +%FT%TZ)" > .diag-marker-2
+          git add .diag-marker-2
+          git commit -m "diag2 force push attempt 1" --quiet
+          git push origin "$BRANCH" 2>&1 || true
+          echo "amend-marker" >> .diag-marker-2
+          git add .diag-marker-2
+          git commit --amend --no-edit --quiet
+          git push --force origin "$BRANCH" 2>&1 && echo "Test 2 PASS (force-push to branch works)" || echo "Test 2 FAIL"
+          git push origin --delete "$BRANCH" 2>&1 || true
+
+      - name: Test 3 — same URL style as JamesIves (actor as basic-auth user)
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          echo "github.actor = $GH_ACTOR"
+          cd "$(mktemp -d)"
+          BRANCH="diag-test3-$(date +%s)"
+          git clone --quiet --depth 1 \
+            "https://${GH_ACTOR}:${TOKEN}@github.com/OE5XRX/OE5XRX.github.io.git" repo
+          cd repo
+          git config user.name "diag"
+          git config user.email "diag@oe5xrx.local"
+          git checkout -b "$BRANCH"
+          echo "marker-$(date -u +%FT%TZ)" > .diag-marker-3
+          git add .diag-marker-3
+          git commit -m "diag3 push with actor:token URL" --quiet
+          git push --force origin "$BRANCH" 2>&1 && echo "Test 3 PASS" || echo "Test 3 FAIL"
+          git push origin --delete "$BRANCH" 2>&1 || true
+
+      - name: Test 4 — JamesIves action with dry-run
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          token: ${{ secrets.DEPLOY_GH_TOKEN }}
+          repository-name: OE5XRX/OE5XRX.github.io
+          branch: main
+          folder: .
+          target-folder: __diag-test-folder
+          clean: false
+          dry-run: true
