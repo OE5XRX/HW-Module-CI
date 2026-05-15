@@ -105,12 +105,10 @@ Consumer workflows pin to `@main` (floating). Breaking changes pushed here affec
 
 The release workflow expects these secrets to be available org-wide:
 
-- `INVENTREE_API_TOKEN`
-- `INVENTREE_API_HOST`
-- `MOUSER_API_KEY`
 - `DEPLOY_GH_TOKEN` — fine-grained PAT with `contents:write` (deploy to `OE5XRX.github.io`) **and** `actions:write` (so Auto-Release-created tags trigger the downstream `release: published` event — the default `GITHUB_TOKEN` would not).
+- `INVENTREE_API_TOKEN`, `INVENTREE_API_HOST`, `MOUSER_API_KEY` — currently unused (InvenTree integration commented out in `create-release-docs.yaml` after the server was decommissioned 2026-05). Keep the secret slots reserved for when InvenTree comes back online.
 
-All four should have visibility `all` so any repo in the OE5XRX org can use them via `secrets: inherit`.
+`DEPLOY_GH_TOKEN` should have visibility `all` so any repo in the OE5XRX org can use it via `secrets: inherit`.
 
 ## Layout of this repo
 
