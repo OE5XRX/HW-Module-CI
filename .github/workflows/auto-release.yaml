@@ -32,19 +32,18 @@ jobs:
             exit 1
           fi
 
-      - name: Secret precheck — RELEASE_TRIGGER_TOKEN must be set
+      - name: Secret precheck — DEPLOY_GH_TOKEN must be available
         shell: bash
         env:
-          TOKEN: ${{ secrets.RELEASE_TRIGGER_TOKEN }}
+          TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${TOKEN:-}" ]; then
-            echo "::error::Org secret RELEASE_TRIGGER_TOKEN is not set."
-            echo "Create a fine-grained PAT with:"
-            echo "  Repository access: HW-Module-* + HW-DebugBoard"
-            echo "  Permissions:       contents:write, actions:write"
-            echo "Add it as an org-level secret named"
-            echo "RELEASE_TRIGGER_TOKEN with visibility set to those repos."
+            echo "::error::Org secret DEPLOY_GH_TOKEN is not visible to this repo."
+            echo "Check Org settings → Secrets and variables → Actions:"
+            echo "  - secret DEPLOY_GH_TOKEN exists"
+            echo "  - visibility includes this repository"
+            echo "  - PAT has contents:write + actions:write"
             exit 1
           fi
 
@@ -66,7 +65,7 @@ jobs:
         id: compute
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TRIGGER_TOKEN }}
+          GH_TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
         run: |
           set -euo pipefail
           python3 _ci/scripts/compute_next_version.py
@@ -75,7 +74,7 @@ jobs:
         if: steps.compute.outputs.bump_type != 'none' && steps.compute.outputs.bump_type != ''
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TRIGGER_TOKEN }}
+          GH_TOKEN: ${{ secrets.DEPLOY_GH_TOKEN }}
           NEXT_TAG: ${{ steps.compute.outputs.next_tag }}
         run: |
           set -euo pipefail
