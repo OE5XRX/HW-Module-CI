@@ -15,8 +15,12 @@ commit + push on OE5XRX.github.io, authenticated via DEPLOY_GH_TOKEN.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -177,3 +181,124 @@ def snapshot_consumer_dir(src: Path, dst: Path) -> None:
             f"{dst}/",
         ]
     )
+
+
+CONSUMER_DOCS_BASE = Path("docs/remote-station/hardware")
+EXIT_DOWNGRADE = 2
+
+
+def _git(args: List[str], cwd: Path) -> None:
+    """Run a git command inside `cwd` via subprocess.check_call."""
+    subprocess.check_call(["git", "-C", str(cwd)] + args)
+
+
+def main() -> int:
+    """Entry point. Reads env, computes the decision, performs the
+    archive if needed, and exits 0 on success/noop or non-zero on
+    error.
+    """
+    token = os.environ["GH_TOKEN"]
+    current_tag = os.environ["GITHUB_REF_NAME"]
+    repo_name = os.environ["REPO_NAME"]
+    target_repo = os.environ.get("TARGET_REPO", "OE5XRX/OE5XRX.github.io")
+
+    parsed_current = parse_tag(current_tag)
+    if parsed_current is None:
+        print(
+            f"::error::Current tag '{current_tag}' is not a managed "
+            "release (v<MAJOR>.<MINOR> with MAJOR>=1). Skipping archive."
+        )
+        return 0  # Don't block the deploy — release-docs handles odd tags
+    current_major, _current_minor = parsed_current
+
+    tags = list_release_tags()
+    prev = find_previous_release(tags, current_tag=current_tag)
+    prev_major = prev[0] if prev else None
+    decision = decide_archive(current_major, prev_major)
+
+    if decision == "noop-first-release":
+        print(f"::notice::archive skip: noop-first-release (current={current_tag})")
+        return 0
+    if decision == "noop-same-major":
+        print(
+            f"::notice::archive skip: noop-same-major "
+            f"(current={current_tag}, previous={prev[2] if prev else 'None'})"
+        )
+        return 0
+    if decision == "error-downgrade":
+        print(
+            f"::error::archive abort: current tag {current_tag} has lower "
+            f"Major than previous release {prev[2] if prev else 'None'}. "
+            "This usually means a maintainer mistake — investigate before retry."
+        )
+        return EXIT_DOWNGRADE
+    # decision == "archive"
+    assert prev is not None and prev_major is not None
+    prev_tag = prev[2]
+    print(
+        f"::notice::archive triggered: previous={prev_tag} (Major={prev_major}) "
+        f"current={current_tag} (Major={current_major})"
+    )
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="hwci-archive-"))
+    try:
+        clone_dst = tmpdir / "target"
+        subprocess.check_call(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                f"https://x-access-token:{token}@github.com/{target_repo}.git",
+                str(clone_dst),
+            ]
+        )
+        consumer_dir = clone_dst / CONSUMER_DOCS_BASE / repo_name
+        if not consumer_dir.is_dir():
+            print(
+                f"::notice::archive skip: consumer dir "
+                f"{CONSUMER_DOCS_BASE / repo_name} does not exist in "
+                f"target repo yet — nothing to archive."
+            )
+            return 0
+
+        if existing_archive_path(consumer_dir, prev_major):
+            print(
+                f"::notice::archive skip: "
+                f"{consumer_dir / f'v{prev_major}'} already exists "
+                "— preserving existing snapshot."
+            )
+            return 0
+
+        archive_dst = consumer_dir / f"v{prev_major}"
+        snapshot_consumer_dir(consumer_dir, archive_dst)
+        modified = rewrite_archived_markdown(archive_dst)
+        print(
+            f"::notice::archive snapshot complete: "
+            f"{archive_dst.relative_to(clone_dst)} "
+            f"({modified} md files marked nav_exclude)"
+        )
+
+        _git(["config", "user.name", "OE5XRX archive bot"], cwd=clone_dst)
+        _git(
+            ["config", "user.email", "noreply@oe5xrx.org"],
+            cwd=clone_dst,
+        )
+        _git(["add", str(archive_dst.relative_to(clone_dst))], cwd=clone_dst)
+        _git(
+            [
+                "commit",
+                "-m",
+                f"archive: snapshot {repo_name} at v{prev_major} "
+                f"before {current_tag} deploy",
+            ],
+            cwd=clone_dst,
+        )
+        _git(["push", "origin", "main"], cwd=clone_dst)
+        return 0
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

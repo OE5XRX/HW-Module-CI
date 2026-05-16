@@ -356,3 +356,138 @@ def test_snapshot_excludes_any_v_prefixed_subdir(tmp_path):
 
     assert not (dst / "v0").exists()
     assert not (dst / "v10").exists()
+
+
+# ---------------------------------------------------------------------------
+# main — end-to-end orchestration (subprocess stubbed)
+# ---------------------------------------------------------------------------
+
+def _stub_subprocess_for_main(monkeypatch, tags, target_repo_files=None):
+    """Stub subprocess.check_output and check_call for main().
+
+    `tags` is the gh release list payload.
+    `target_repo_files` is a dict {relative_path: content} for files in
+    the cloned target repo's consumer directory. If None, the consumer
+    directory is created empty inside the fake clone.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    payload = json.dumps([{"tagName": t} for t in tags])
+    clone_dir_holder = {}
+
+    def fake_check_output(args, *a, **kw):
+        if args[:2] == ["gh", "release"]:
+            return payload
+        raise AssertionError(f"unexpected check_output: {args}")
+
+    def fake_check_call(args, *a, **kw):
+        # Recognise: git clone, rsync, git -C cwd add/commit/push
+        if args[0] == "git" and args[1] == "clone":
+            # last arg is the destination dir
+            dest = Path(args[-1])
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / ".git").mkdir(parents=True, exist_ok=True)  # fake git dir
+            clone_dir_holder["path"] = dest
+            consumer = dest / "docs" / "remote-station" / "hardware" / "HW-Module-PowerBoard"
+            consumer.mkdir(parents=True, exist_ok=True)
+            for rel, content in (target_repo_files or {}).items():
+                f = consumer / rel
+                f.parent.mkdir(parents=True, exist_ok=True)
+                if isinstance(content, bytes):
+                    f.write_bytes(content)
+                else:
+                    f.write_text(content)
+            return 0
+        if args[0] == "rsync":
+            # Re-use real rsync for the test — it's a small tmp dir
+            return subprocess.run(list(args), check=True).returncode
+        if args[0] == "git" and "-C" in args:
+            # Treat all in-clone git ops as success
+            return 0
+        raise AssertionError(f"unexpected check_call: {args}")
+
+    monkeypatch.setattr(subprocess, "check_output", fake_check_output)
+    monkeypatch.setattr(subprocess, "check_call", fake_check_call)
+    # Preserve the clone dir so test assertions can inspect it after main()
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **kw: None)
+    return clone_dir_holder
+
+
+def _set_env(monkeypatch, current_tag, repo_name="HW-Module-PowerBoard"):
+    monkeypatch.setenv("GH_TOKEN", "fake-token")
+    monkeypatch.setenv("GITHUB_REF_NAME", current_tag)
+    monkeypatch.setenv("REPO_NAME", repo_name)
+    monkeypatch.setenv("TARGET_REPO", "OE5XRX/OE5XRX.github.io")
+
+
+def test_main_first_release_noop(monkeypatch, capsys):
+    # Only the current tag exists — no previous release to archive
+    _stub_subprocess_for_main(monkeypatch, tags=["v1.0"])
+    _set_env(monkeypatch, current_tag="v1.0")
+    rc = apm.main()
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "noop-first-release" in captured.out
+    # No clone, no rsync was attempted (the stub would have AssertionError'd
+    # on unexpected calls; check_output only got gh release list)
+
+
+def test_main_same_major_noop(monkeypatch, capsys):
+    _stub_subprocess_for_main(monkeypatch, tags=["v1.0", "v1.1"])
+    _set_env(monkeypatch, current_tag="v1.1")
+    rc = apm.main()
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "noop-same-major" in captured.out
+
+
+def test_main_downgrade_errors(monkeypatch, capsys):
+    _stub_subprocess_for_main(monkeypatch, tags=["v1.0", "v2.0"])
+    _set_env(monkeypatch, current_tag="v1.0")
+    rc = apm.main()
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "error-downgrade" in captured.out or "::error::" in captured.out
+
+
+def test_main_major_bump_archives(monkeypatch, capsys):
+    holder = _stub_subprocess_for_main(
+        monkeypatch,
+        tags=["v1.0", "v1.5", "v2.0"],
+        target_repo_files={
+            "index.md": "---\ntitle: Power\n---\nlive content\n",
+            "schematic.pdf": b"%PDF-fake\n",
+        },
+    )
+    _set_env(monkeypatch, current_tag="v2.0")
+    rc = apm.main()
+    captured = capsys.readouterr()
+    assert rc == 0
+    # Archive directory exists and has the snapshotted content
+    archive = holder["path"] / "docs/remote-station/hardware/HW-Module-PowerBoard/v1"
+    assert archive.is_dir()
+    assert "nav_exclude: true" in (archive / "index.md").read_text()
+    # PDF copied verbatim
+    assert (archive / "schematic.pdf").read_bytes() == b"%PDF-fake\n"
+    assert "archive" in captured.out
+
+
+def test_main_existing_archive_guard(monkeypatch, capsys):
+    holder = _stub_subprocess_for_main(
+        monkeypatch,
+        tags=["v1.0", "v2.0"],
+        target_repo_files={
+            "index.md": "live\n",
+            "v1/index.md": "already archived previously\n",
+        },
+    )
+    _set_env(monkeypatch, current_tag="v2.0")
+    rc = apm.main()
+    captured = capsys.readouterr()
+    assert rc == 0
+    # Existing archive was NOT overwritten
+    archive_index = holder["path"] / "docs/remote-station/hardware/HW-Module-PowerBoard/v1/index.md"
+    assert archive_index.read_text() == "already archived previously\n"
+    assert "exists" in captured.out.lower() or "skip" in captured.out.lower()
