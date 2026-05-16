@@ -15,6 +15,7 @@ commit + push on OE5XRX.github.io, authenticated via DEPLOY_GH_TOKEN.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 TAG_RE = re.compile(r"^v(\d+)\.(\d+)$")
@@ -80,3 +81,39 @@ def decide_archive(
     if previous_major < current_major:
         return "archive"
     return "error-downgrade"
+
+
+def add_nav_exclude_to_front_matter(path: Path) -> bool:
+    """Insert `nav_exclude: true` into the leading YAML front matter.
+
+    Returns True if the file was modified, False if no front-matter
+    was found OR nav_exclude was already present. Idempotent: running
+    twice does not duplicate the line.
+
+    The file is expected to start with:
+
+        ---
+        key: value
+        ...
+        ---
+
+    Only the FIRST `---\n…\n---\n` block at the top of the file
+    is treated as front matter. Any `---` appearing later (e.g. a
+    markdown horizontal rule) is left alone.
+    """
+    txt = path.read_text(encoding="utf-8")
+    if not txt.startswith("---\n"):
+        return False
+    # Find the closing --- of the front-matter block. Search starts at
+    # the first character AFTER the opening "---\n" so we don't match
+    # the opening as the closing.
+    closing = txt.find("\n---\n", 4)
+    if closing == -1:
+        return False
+    fm_body = txt[4:closing]  # the content between the --- markers
+    if "nav_exclude:" in fm_body:
+        return False
+    new_fm_body = fm_body.rstrip("\n") + "\nnav_exclude: true"
+    new_txt = "---\n" + new_fm_body + txt[closing:]
+    path.write_text(new_txt, encoding="utf-8")
+    return True

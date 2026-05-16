@@ -103,3 +103,99 @@ def test_decide_two_step_major_bump():
 
 def test_decide_downgrade_is_error():
     assert apm.decide_archive(current_major=1, previous_major=2) == "error-downgrade"
+
+
+# ---------------------------------------------------------------------------
+# add_nav_exclude_to_front_matter
+# ---------------------------------------------------------------------------
+
+def test_add_nav_exclude_fresh_front_matter(tmp_path):
+    p = tmp_path / "index.md"
+    p.write_text(
+        "---\n"
+        "title: Power\n"
+        "nav_order: 3\n"
+        "parent: Hardware\n"
+        "---\n"
+        "\n"
+        "# Power PCB\n"
+        "Some body content.\n"
+    )
+    modified = apm.add_nav_exclude_to_front_matter(p)
+    assert modified is True
+    txt = p.read_text()
+    assert "nav_exclude: true" in txt
+    # Front-matter still bounded by exactly one --- pair at start
+    assert txt.count("\n---\n") >= 1
+    # Body untouched
+    assert "# Power PCB" in txt
+    assert "Some body content." in txt
+
+
+def test_add_nav_exclude_already_present(tmp_path):
+    p = tmp_path / "index.md"
+    original = (
+        "---\n"
+        "title: Power\n"
+        "nav_exclude: true\n"
+        "---\n"
+        "\n"
+        "Body.\n"
+    )
+    p.write_text(original)
+    modified = apm.add_nav_exclude_to_front_matter(p)
+    assert modified is False
+    assert p.read_text() == original
+
+
+def test_add_nav_exclude_no_front_matter(tmp_path):
+    p = tmp_path / "index.md"
+    original = "# Just a heading\nNo front-matter at all.\n"
+    p.write_text(original)
+    modified = apm.add_nav_exclude_to_front_matter(p)
+    assert modified is False
+    assert p.read_text() == original
+
+
+def test_add_nav_exclude_body_has_dashes(tmp_path):
+    """A `---` inside a markdown body (horizontal rule, code block, etc.)
+    must not confuse the front-matter parser."""
+    p = tmp_path / "index.md"
+    p.write_text(
+        "---\n"
+        "title: Power\n"
+        "---\n"
+        "\n"
+        "# Power PCB\n"
+        "\n"
+        "Some intro text.\n"
+        "\n"
+        "---\n"
+        "\n"
+        "More content after a horizontal rule.\n"
+    )
+    modified = apm.add_nav_exclude_to_front_matter(p)
+    assert modified is True
+    txt = p.read_text()
+    # nav_exclude landed in the FIRST front-matter block, not the body rule
+    head, rest = txt.split("\n---\n", 1)
+    assert "nav_exclude: true" in head
+    # Horizontal rule still in the body
+    assert "More content after a horizontal rule." in rest
+
+
+def test_add_nav_exclude_idempotent(tmp_path):
+    """Running twice produces the same file as running once."""
+    p = tmp_path / "index.md"
+    p.write_text(
+        "---\n"
+        "title: Power\n"
+        "---\n"
+        "Body.\n"
+    )
+    apm.add_nav_exclude_to_front_matter(p)
+    after_first = p.read_text()
+    apm.add_nav_exclude_to_front_matter(p)
+    after_second = p.read_text()
+    assert after_first == after_second
+    assert after_first.count("nav_exclude: true") == 1
