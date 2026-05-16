@@ -30,7 +30,8 @@ jobs:
           python3 -m py_compile \
             scripts/bom_export.py \
             scripts/make_stencil_image.py \
-            scripts/compute_next_version.py
+            scripts/compute_next_version.py \
+            scripts/archive_previous_major.py
           python3 -m py_compile scripts/inventree_sync/*.py
 
       - name: Python requirements install dry-run

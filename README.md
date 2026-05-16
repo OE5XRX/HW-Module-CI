@@ -129,6 +129,7 @@ doc/
   favicon.ico
   Icon.png
 scripts/
+  archive_previous_major.py        # Snapshot /<repo>/ to v<old-major>/ on Major bumps
   bom_export.py                    # Push BOM to InvenTree on release
   compute_next_version.py          # Decide next semver tag for Auto-Release
   make_stencil_image.py            # Post-process KiBot SVG → stencil PNG
