@@ -252,3 +252,42 @@ def test_existing_archive_path_consumer_dir_missing(tmp_path):
     the check just returns False — caller handles 'no docs to archive'."""
     missing = tmp_path / "does-not-exist"
     assert apm.existing_archive_path(missing, previous_major=1) is False
+
+
+# ---------------------------------------------------------------------------
+# rewrite_archived_markdown
+# ---------------------------------------------------------------------------
+
+def test_rewrite_archived_markdown_multiple_files(tmp_path):
+    archive = tmp_path / "v1"
+    archive.mkdir()
+    (archive / "index.md").write_text("---\ntitle: A\n---\nbody A\n")
+    (archive / "extra.md").write_text("---\ntitle: B\n---\nbody B\n")
+    (archive / "nested" / "sub.md").parent.mkdir()
+    (archive / "nested" / "sub.md").write_text("---\ntitle: C\n---\nbody C\n")
+    # Non-markdown file should be ignored
+    (archive / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    modified_count = apm.rewrite_archived_markdown(archive)
+    assert modified_count == 3
+    assert "nav_exclude: true" in (archive / "index.md").read_text()
+    assert "nav_exclude: true" in (archive / "extra.md").read_text()
+    assert "nav_exclude: true" in (archive / "nested" / "sub.md").read_text()
+    # PNG unchanged
+    assert (archive / "image.png").read_bytes() == b"\x89PNG\r\n\x1a\n"
+
+
+def test_rewrite_archived_markdown_skips_already_excluded(tmp_path):
+    archive = tmp_path / "v1"
+    archive.mkdir()
+    (archive / "a.md").write_text("---\ntitle: A\nnav_exclude: true\n---\nbody\n")
+    (archive / "b.md").write_text("---\ntitle: B\n---\nbody\n")
+    modified_count = apm.rewrite_archived_markdown(archive)
+    assert modified_count == 1
+
+
+def test_rewrite_archived_markdown_no_md_files(tmp_path):
+    archive = tmp_path / "v1"
+    archive.mkdir()
+    (archive / "image.png").write_bytes(b"\x89PNG")
+    assert apm.rewrite_archived_markdown(archive) == 0

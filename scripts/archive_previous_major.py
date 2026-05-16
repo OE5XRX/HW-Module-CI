@@ -142,3 +142,16 @@ def existing_archive_path(consumer_dir: Path, previous_major: int) -> bool:
     re-trigger or re-release from clobbering an existing archive.
     """
     return (consumer_dir / f"v{previous_major}").is_dir()
+
+
+def rewrite_archived_markdown(archive_dir: Path) -> int:
+    """Walk archive_dir recursively, apply add_nav_exclude_to_front_matter
+    to every *.md file found, return count of files actually modified.
+    """
+    modified = 0
+    for md in archive_dir.rglob("*.md"):
+        if not md.is_file():
+            continue
+        if add_nav_exclude_to_front_matter(md):
+            modified += 1
+    return modified
