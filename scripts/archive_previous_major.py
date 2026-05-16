@@ -14,7 +14,9 @@ commit + push on OE5XRX.github.io, authenticated via DEPLOY_GH_TOKEN.
 """
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -117,3 +119,26 @@ def add_nav_exclude_to_front_matter(path: Path) -> bool:
     new_txt = "---\n" + new_fm_body + txt[closing:]
     path.write_text(new_txt, encoding="utf-8")
     return True
+
+
+def list_release_tags() -> List[str]:
+    """Return all release tag names from the current repo via the gh CLI.
+
+    Runs `gh release list --json tagName --limit 100`. The current
+    working directory must be inside a git checkout of the consumer
+    repo so gh infers the right remote.
+    """
+    out = subprocess.check_output(
+        ["gh", "release", "list", "--json", "tagName", "--limit", "100"],
+        text=True,
+    )
+    return [entry["tagName"] for entry in json.loads(out)]
+
+
+def existing_archive_path(consumer_dir: Path, previous_major: int) -> bool:
+    """Return True if `<consumer_dir>/v<previous_major>/` already exists.
+
+    Used as an existence guard before snapshotting — prevents accidental
+    re-trigger or re-release from clobbering an existing archive.
+    """
+    return (consumer_dir / f"v{previous_major}").is_dir()

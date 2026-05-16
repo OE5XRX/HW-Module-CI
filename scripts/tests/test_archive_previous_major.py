@@ -199,3 +199,56 @@ def test_add_nav_exclude_idempotent(tmp_path):
     after_second = p.read_text()
     assert after_first == after_second
     assert after_first.count("nav_exclude: true") == 1
+
+
+# ---------------------------------------------------------------------------
+# list_release_tags
+# ---------------------------------------------------------------------------
+
+def test_list_release_tags_parses_gh_json(monkeypatch):
+    import json
+    import subprocess
+
+    captured = {}
+
+    def fake(args, *a, **kw):
+        captured["args"] = list(args)
+        return json.dumps([
+            {"tagName": "v2.0"},
+            {"tagName": "v1.5"},
+            {"tagName": "v0.9"},
+        ])
+
+    monkeypatch.setattr(subprocess, "check_output", fake)
+    result = apm.list_release_tags()
+    assert result == ["v2.0", "v1.5", "v0.9"]
+    assert captured["args"][:2] == ["gh", "release"]
+
+
+def test_list_release_tags_empty(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **kw: "[]")
+    assert apm.list_release_tags() == []
+
+
+# ---------------------------------------------------------------------------
+# existing_archive_path
+# ---------------------------------------------------------------------------
+
+def test_existing_archive_path_present(tmp_path):
+    consumer_dir = tmp_path / "HW-Module-PowerBoard"
+    (consumer_dir / "v1").mkdir(parents=True)
+    assert apm.existing_archive_path(consumer_dir, previous_major=1) is True
+
+
+def test_existing_archive_path_absent(tmp_path):
+    consumer_dir = tmp_path / "HW-Module-PowerBoard"
+    consumer_dir.mkdir(parents=True)
+    assert apm.existing_archive_path(consumer_dir, previous_major=1) is False
+
+
+def test_existing_archive_path_consumer_dir_missing(tmp_path):
+    """If consumer dir doesn't exist at all yet (truly first deploy),
+    the check just returns False — caller handles 'no docs to archive'."""
+    missing = tmp_path / "does-not-exist"
+    assert apm.existing_archive_path(missing, previous_major=1) is False
