@@ -291,3 +291,68 @@ def test_rewrite_archived_markdown_no_md_files(tmp_path):
     archive.mkdir()
     (archive / "image.png").write_bytes(b"\x89PNG")
     assert apm.rewrite_archived_markdown(archive) == 0
+
+
+# ---------------------------------------------------------------------------
+# snapshot_consumer_dir
+# ---------------------------------------------------------------------------
+
+def test_snapshot_copies_top_level_files(tmp_path):
+    src = tmp_path / "HW-Module-PowerBoard"
+    src.mkdir()
+    (src / "index.md").write_text("---\ntitle: Power\n---\nbody\n")
+    (src / "schematic.pdf").write_bytes(b"%PDF-1.4 fake\n")
+    dst = src / "v1"
+
+    apm.snapshot_consumer_dir(src, dst)
+
+    assert (dst / "index.md").read_text() == "---\ntitle: Power\n---\nbody\n"
+    assert (dst / "schematic.pdf").read_bytes() == b"%PDF-1.4 fake\n"
+
+
+def test_snapshot_excludes_existing_v_archive_subdirs(tmp_path):
+    """Older archives must NOT end up nested inside the new archive
+    (which would produce /v2/v1/, /v3/v2/v1/, …)."""
+    src = tmp_path / "HW-Module-PowerBoard"
+    src.mkdir()
+    (src / "index.md").write_text("live\n")
+    # An existing /v0/ archive from a long-ago Major bump
+    (src / "v0").mkdir()
+    (src / "v0" / "index.md").write_text("ancient\n")
+    dst = src / "v1"
+
+    apm.snapshot_consumer_dir(src, dst)
+
+    assert (dst / "index.md").read_text() == "live\n"
+    # v0 NOT copied into the new v1 archive
+    assert not (dst / "v0").exists()
+
+
+def test_snapshot_copies_nested_dirs(tmp_path):
+    src = tmp_path / "HW-Module-PowerBoard"
+    (src / "JLCPCB").mkdir(parents=True)
+    (src / "index.md").write_text("live\n")
+    (src / "JLCPCB" / "bom.csv").write_text("part,qty\n")
+    dst = src / "v1"
+
+    apm.snapshot_consumer_dir(src, dst)
+
+    assert (dst / "JLCPCB" / "bom.csv").read_text() == "part,qty\n"
+
+
+def test_snapshot_excludes_any_v_prefixed_subdir(tmp_path):
+    """Pattern is `v[0-9]*`, not literal `v0/v1/v2`. v10 must also be
+    excluded for forward-compat with double-digit majors."""
+    src = tmp_path / "HW-Module-PowerBoard"
+    src.mkdir()
+    (src / "index.md").write_text("live\n")
+    (src / "v0").mkdir()
+    (src / "v0" / "x.txt").write_text("v0 archive\n")
+    (src / "v10").mkdir()
+    (src / "v10" / "x.txt").write_text("v10 archive\n")
+    dst = src / "v11"
+
+    apm.snapshot_consumer_dir(src, dst)
+
+    assert not (dst / "v0").exists()
+    assert not (dst / "v10").exists()

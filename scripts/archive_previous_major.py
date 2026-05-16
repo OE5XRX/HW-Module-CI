@@ -155,3 +155,25 @@ def rewrite_archived_markdown(archive_dir: Path) -> int:
         if add_nav_exclude_to_front_matter(md):
             modified += 1
     return modified
+
+
+def snapshot_consumer_dir(src: Path, dst: Path) -> None:
+    """Copy `src/` contents into `dst/`, EXCLUDING any `v<digits>`
+    subdirs (which are old archives from earlier Major bumps).
+
+    Uses rsync with `--exclude='v[0-9]*'` so old archives don't end
+    up nested inside the new archive (`v2/v1/v0/...`).
+
+    `dst` must not exist beforehand — the caller checks this via
+    existing_archive_path() and refuses to overwrite.
+    """
+    dst.mkdir(parents=True, exist_ok=False)
+    subprocess.check_call(
+        [
+            "rsync",
+            "-a",
+            "--exclude=v[0-9]*",
+            f"{src}/",
+            f"{dst}/",
+        ]
+    )
