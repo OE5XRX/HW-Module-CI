@@ -11,6 +11,17 @@ current one → archive. Otherwise → noop.
 
 The archive itself is a git-clone + rsync + nav_exclude rewrite +
 commit + push on OE5XRX.github.io, authenticated via DEPLOY_GH_TOKEN.
+
+Back-port limitation:
+The "previous release" is the highest-versioned tag other than the
+current one, NOT the chronologically previous release. That means
+publishing v1.6 (a back-port to an older Major) AFTER v2.0 has
+already shipped would be flagged as "error-downgrade" and abort
+the release pipeline. OE5XRX's current release cadence has at most
+one Major active at a time, so this is intentional. If back-ports
+ever become a requirement, switch find_previous_release() to a
+chronological-previous lookup via `gh release list --created-at`
+ordering.
 """
 from __future__ import annotations
 
@@ -170,6 +181,15 @@ def snapshot_consumer_dir(src: Path, dst: Path) -> None:
 
     `dst` must not exist beforehand — the caller checks this via
     existing_archive_path() and refuses to overwrite.
+
+    Implementation note — self-recursion coupling:
+    The caller passes `dst = src / "v<prev_major>"` (the archive lives
+    INSIDE the source tree). rsync would otherwise recurse into the
+    freshly-created `dst` dir and copy the snapshot into itself
+    indefinitely. The `--exclude=v[0-9]*` filter is what prevents that
+    — it MUST match the name the caller chose for `dst`. If anyone
+    ever loosens the exclude pattern, also reconsider the src/dst
+    layout, or rsync will copy `dst` into itself.
     """
     dst.mkdir(parents=True, exist_ok=False)
     subprocess.check_call(

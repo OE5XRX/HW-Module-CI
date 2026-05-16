@@ -137,7 +137,7 @@ jobs:
           target-folder: docs/remote-station/hardware/${{ github.event.repository.name }}
           clean: true
           clean-exclude: |
-            v*
+            v[0-9]*
 
       # InvenTree integration disabled — the OE5XRX InvenTree server was
       # decommissioned (2026-05) and not restored. The bom_export.py script
