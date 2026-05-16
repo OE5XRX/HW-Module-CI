@@ -77,3 +77,29 @@ def test_find_previous_filters_malformed():
         ["release/v1.2", "v1.0-rc1", "v0.9", "v1.0", "v2.0"],
         current_tag="v2.0",
     ) == (1, 0, "v1.0")
+
+
+# ---------------------------------------------------------------------------
+# decide_archive
+# ---------------------------------------------------------------------------
+
+def test_decide_no_previous():
+    assert apm.decide_archive(current_major=1, previous_major=None) == "noop-first-release"
+
+
+def test_decide_same_major():
+    assert apm.decide_archive(current_major=1, previous_major=1) == "noop-same-major"
+
+
+def test_decide_major_bump():
+    assert apm.decide_archive(current_major=2, previous_major=1) == "archive"
+
+
+def test_decide_two_step_major_bump():
+    # v1.x → v3.0 (skipping v2): still an archive of v1 — only the immediate
+    # predecessor gets archived. v2 was never deployed live anyway.
+    assert apm.decide_archive(current_major=3, previous_major=1) == "archive"
+
+
+def test_decide_downgrade_is_error():
+    assert apm.decide_archive(current_major=1, previous_major=2) == "error-downgrade"

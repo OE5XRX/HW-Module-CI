@@ -58,3 +58,25 @@ def find_previous_release(
         return None
     candidates.sort(reverse=True)
     return candidates[0]
+
+
+def decide_archive(
+    current_major: int, previous_major: Optional[int]
+) -> str:
+    """Return one of 'archive', 'noop-first-release', 'noop-same-major',
+    'error-downgrade' based on whether a Major-bump archive is needed.
+
+    The four outcomes:
+      previous=None     -> noop-first-release  (no docs to archive yet)
+      previous==current -> noop-same-major     (Minor bump; docs stay in root)
+      previous<current  -> archive             (Major bump; snapshot needed)
+      previous>current  -> error-downgrade     (release tag went backwards;
+                                                maintainer mistake)
+    """
+    if previous_major is None:
+        return "noop-first-release"
+    if previous_major == current_major:
+        return "noop-same-major"
+    if previous_major < current_major:
+        return "archive"
+    return "error-downgrade"
