@@ -35,3 +35,26 @@ def parse_tag(tag: str) -> Optional[Tuple[int, int]]:
     if major < 1:
         return None
     return major, minor
+
+
+def find_previous_release(
+    tags: List[str], current_tag: str
+) -> Optional[Tuple[int, int, str]]:
+    """Return (major, minor, tag) of the highest managed release *other
+    than* current_tag, or None if no such release exists.
+
+    Same parsing rules as parse_tag: only v<MAJOR>.<MINOR> with MAJOR ≥ 1.
+    """
+    candidates: List[Tuple[int, int, str]] = []
+    for tag in tags:
+        if tag == current_tag:
+            continue
+        parsed = parse_tag(tag)
+        if parsed is None:
+            continue
+        major, minor = parsed
+        candidates.append((major, minor, tag))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0]

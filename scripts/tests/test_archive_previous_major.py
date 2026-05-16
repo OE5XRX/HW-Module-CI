@@ -40,3 +40,40 @@ def test_parse_tag_no_v_prefix_returns_none():
 
 def test_parse_tag_empty_returns_none():
     assert apm.parse_tag("") is None
+
+
+# ---------------------------------------------------------------------------
+# find_previous_release
+# ---------------------------------------------------------------------------
+
+def test_find_previous_empty_list():
+    assert apm.find_previous_release([], current_tag="v1.0") is None
+
+
+def test_find_previous_only_current():
+    assert apm.find_previous_release(["v1.0"], current_tag="v1.0") is None
+
+
+def test_find_previous_one_older():
+    assert apm.find_previous_release(
+        ["v1.0", "v2.0"], current_tag="v2.0"
+    ) == (1, 0, "v1.0")
+
+
+def test_find_previous_multiple_older():
+    assert apm.find_previous_release(
+        ["v1.0", "v1.5", "v2.0"], current_tag="v2.0"
+    ) == (1, 5, "v1.5")
+
+
+def test_find_previous_out_of_order():
+    assert apm.find_previous_release(
+        ["v2.0", "v1.0", "v1.5"], current_tag="v2.0"
+    ) == (1, 5, "v1.5")
+
+
+def test_find_previous_filters_malformed():
+    assert apm.find_previous_release(
+        ["release/v1.2", "v1.0-rc1", "v0.9", "v1.0", "v2.0"],
+        current_tag="v2.0",
+    ) == (1, 0, "v1.0")
