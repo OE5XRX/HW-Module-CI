@@ -30,26 +30,47 @@ demand.
 **Symptom:** Bei Bauteilen, die nur einen Mouser-SKU haben (kein LCSC),
 wird kein Bild in InvenTree gespeichert.
 
-**Root Cause (am 2026-06-03 verifiziert):** Mouser betreibt PerimeterX-
-Bot-Protection vor `www.mouser.com/images/...`. Server-seitige Requests
-werden **immer** mit HTTP 200 + 13.897 Byte HTML „Access denied"
-beantwortet — unabhängig von User-Agent, Referer, HTTP-Version, oder
-Subdomain. Der aktuelle Code (`client.py:upload_image_from_url`) setzt
-zusätzlich `Referer: https://www.lcsc.com/` was bei Mouser-URLs sowieso
-falsch wäre, ist aber nicht die Hauptursache.
+**Root Cause (am 2026-06-03 lokal verifiziert mit ESP32-D0WDRH2-V3 via
+mouser.at):** Mouser betreibt PerimeterX-Bot-Protection vor
+`www.mouser.com/images/...` und `www.mouser.at/images/...`. PerimeterX
+prüft auf einen kompletten Browser-Fingerprint inkl. moderner Fetch-
+Metadata-Header. Der aktuelle Code sendet einen iOS-Safari-UA und nur
+einen (falschen, cross-origin) Referer — das reicht PerimeterX nicht
+und es kommt eine 4592-Byte „Access denied"-HTML-Seite mit HTTP 200
+zurück (die dann fälschlicherweise als „Bild" hochgeladen würde).
 
-**Fix-Strategie:**
-- Image-URLs nach Host klassifizieren (LCSC / Mouser / Manufacturer-CDN).
-- LCSC: aktuelle Header beibehalten — funktioniert.
-- Mouser: **gar nicht erst probieren** im CI. Fallback-Kette:
-  1. LCSC-Bild via MPN-Search (macht `_fetch_and_merge` teilweise schon).
-  2. Manufacturer-CDN aus Datasheet-URL ableiten (TI, Würth, Panasonic).
-  3. Aufgeben + klare WARN-Zeile.
+**Fix-Strategie (Simple Header-Update):**
+Der minimale Header-Set für Mouser ist isoliert worden. Diese Header
+sind **alle mandatory**, sonst blockt PerimeterX:
+
+```
+User-Agent:      Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
+                 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
+Accept-Language: en-US,en;q=0.9     (beliebiger Wert)
+Referer:         https://www.mouser.com/  (beliebiger Wert; sogar
+                 lcsc.com wird akzeptiert — Mouser validiert nicht
+                 gegen Sec-Fetch-Site)
+Sec-Fetch-Dest:  image
+Sec-Fetch-Mode:  no-cors
+Sec-Fetch-Site:  same-origin   (alles außer "none" geht)
+```
+
+`Accept: image/*` ist optional; mit `image/webp` schickt Mouser WebP,
+ohne JPG (beides funktioniert, beides ist ein echtes Bild).
+
+**Konkrete Änderungen:**
+- `client.py:upload_image_from_url`:
+  - Desktop-Chrome-UA statt `_IOS_UA` für nicht-LCSC-URLs.
+  - `Accept-Language` und die drei `Sec-Fetch-*` Header hinzufügen.
+  - Host-abhängiger Referer: LCSC → `lcsc.com`, Mouser → `mouser.com`,
+    sonst weglassen.
 - **Validierung nach Download:** `Content-Type` muss mit `image/`
-  starten. Wenn nicht → wegwerfen, nicht hochladen.
+  starten. Sonst war's der PerimeterX-Block, nicht hochladen, WARN.
+- Optional Bonus: Mouser-API liefert `ImagePath` typischerweise als
+  `_SPL.jpg` (klein, 150px). URL-Transform `/images/` → `/hd/` holt
+  die ~1000px-Variante (auch verifiziert).
 
-**Files:** `scripts/inventree_sync/client.py`,
-`scripts/inventree_sync/fetchers.py`.
+**Files:** `scripts/inventree_sync/client.py`.
 
 ---
 
