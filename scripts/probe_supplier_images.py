@@ -56,11 +56,17 @@ def probe(url: str, min_bytes: int) -> tuple[bool, str]:
     except Exception as exc:
         return False, f"request failed: {exc}"
 
-    ct = resp.headers.get("Content-Type", "")
+    ct = resp.headers.get("Content-Type", "").lower()
     body = resp.content
     if not ct.startswith("image/"):
         snippet = body[:80].decode("utf-8", errors="replace").strip()
         return False, f"non-image ct={ct!r}, first 80 B: {snippet!r}"
+    # JPEG/PNG only — WebP/AVIF support varies by InvenTree-instance Pillow
+    # build flags and front-end version (see _image_headers docstring).  The
+    # production Accept header excludes them; if a supplier CDN now delivers
+    # them anyway, fail loud rather than ship a possibly-unrenderable image.
+    if "webp" in ct or "avif" in ct:
+        return False, f"non-jpeg/png ct={ct!r} (refresh _image_headers Accept?)"
     if len(body) < min_bytes:
         return False, f"body too small ({len(body)} < {min_bytes} B)"
     return True, f"OK ct={ct} size={len(body)}B"

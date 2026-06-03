@@ -48,12 +48,21 @@ def _image_headers(image_url: str) -> dict[str, str]:
 
     The same set works for both Mouser (PerimeterX) and LCSC (asset CDN),
     so callers don't need to switch on host.
+
+    Accept intentionally excludes ``image/webp`` and ``image/avif``:
+    Mouser does content-negotiation and would otherwise deliver WebP,
+    but not every InvenTree installation has Pillow built with WebP
+    support, and InvenTree's stored-image rendering varies by version
+    across the front-end.  JPEG/PNG yields universal compatibility at
+    the cost of ~80 % larger files — acceptable trade-off for a part
+    catalog that has a handful of MB per release at most.  Verified
+    2026-06-03 against both CDNs.
     """
     parts = urllib.parse.urlsplit(image_url)
     site_root = f"{parts.scheme}://{parts.netloc}/"
     return {
         "User-Agent":         _DESKTOP_UA,
-        "Accept":             "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept":             "image/jpeg,image/png,image/*,*/*;q=0.8",
         "Accept-Language":    "en-US,en;q=0.9",
         "Referer":            site_root,
         "Sec-Fetch-Dest":     "image",
