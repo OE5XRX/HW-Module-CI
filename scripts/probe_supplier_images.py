@@ -25,7 +25,7 @@ import requests
 # Allow `python3 scripts/probe_supplier_images.py` from any cwd
 sys.path.insert(0, str(Path(__file__).parent))
 
-from inventree_sync.client import _image_headers
+from inventree_sync.client import _image_headers, _try_mouser_hd_url
 
 
 SAMPLES = [
@@ -66,10 +66,42 @@ def probe(url: str, min_bytes: int) -> tuple[bool, str]:
     return True, f"OK ct={ct} size={len(body)}B"
 
 
+def check_hd_transform() -> tuple[bool, str]:
+    """Verify that _try_mouser_hd_url upgrades known URL patterns."""
+    cases = [
+        (
+            "https://www.mouser.com/images/ti/lrg/X_t.jpg",
+            "https://www.mouser.com/images/ti/hd/X_t.jpg",
+        ),
+        (
+            "https://www.mouser.at/images/espressifsystems/images/ESP32-D0WDRH2-V3_SPL.jpg",
+            "https://www.mouser.at/images/espressifsystems/hd/ESP32-D0WDRH2-V3_SPL.jpg",
+        ),
+        (
+            "https://www.lcsc.com/foo.jpg",
+            "https://www.lcsc.com/foo.jpg",  # nicht-Mouser bleibt unverändert
+        ),
+    ]
+    for src, expected in cases:
+        got = _try_mouser_hd_url(src)
+        if got != expected:
+            return False, f"_try_mouser_hd_url({src!r}) returned {got!r}, expected {expected!r}"
+    return True, f"{len(cases)} URL-transform cases OK"
+
+
 def main() -> int:
     fail_count = 0
     print(f"{'STATUS':<7} | {'CASE':<35} | DETAIL")
     print("-" * 100)
+
+    # Offline check: HD-URL transform
+    ok, detail = check_hd_transform()
+    status = "PASS" if ok else "FAIL"
+    if not ok:
+        fail_count += 1
+    print(f"{status:<7} | {'HD-URL transform (offline)':<35} | {detail}")
+
+    # Online checks: real CDN downloads
     for label, url, min_bytes in SAMPLES:
         ok, detail = probe(url, min_bytes)
         status = "PASS" if ok else "FAIL"
@@ -78,7 +110,7 @@ def main() -> int:
         print(f"{status:<7} | {label:<35} | {detail}")
     print()
     if fail_count:
-        print(f"FAIL: {fail_count}/{len(SAMPLES)} probes failed.", file=sys.stderr)
+        print(f"FAIL: {fail_count}/{len(SAMPLES) + 1} probes failed.", file=sys.stderr)
         return 1
     print("All probes passed.")
     return 0

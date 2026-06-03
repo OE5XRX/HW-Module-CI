@@ -65,6 +65,36 @@ def _image_headers(image_url: str) -> dict[str, str]:
     }
 
 
+def _try_mouser_hd_url(url: str) -> str:
+    """Upgrade a Mouser thumbnail URL to its HD variant when possible.
+
+    The Mouser API typically returns paths like
+        https://www.mouser.com/images/<mfr>/lrg/<sku>_SPL.jpg
+        https://www.mouser.com/images/<mfr>/images/<sku>_SPL.jpg
+    The same path with ``/hd/`` in place of ``/lrg/`` or ``/images/``
+    returns a ~1000-px version (10–20× larger).  Callers are expected
+    to fall back to *url* on 404/validation-fail.
+
+    Examples
+    --------
+    >>> _try_mouser_hd_url("https://www.mouser.com/images/ti/lrg/X_t.jpg")
+    'https://www.mouser.com/images/ti/hd/X_t.jpg'
+    >>> _try_mouser_hd_url("https://www.lcsc.com/foo.jpg")
+    'https://www.lcsc.com/foo.jpg'
+    """
+    if "mouser." not in url:
+        return url
+    # Order matters: try /lrg/ → /hd/ first (more specific), then /images/ → /hd/.
+    # Use rsplit so we hit the *variant-folder* /images/ near the SKU, not the
+    # leading host-level /images/ in URLs like
+    # https://www.mouser.at/images/<mfr>/images/<sku>_SPL.jpg.
+    for needle in ("/lrg/", "/images/"):
+        if needle in url:
+            head, _, tail = url.rpartition(needle)
+            return f"{head}/hd/{tail}"
+    return url
+
+
 def get_or_create_supplier(api: InvenTreeAPI, name: str) -> Optional[Company]:
     """Return the supplier Company by name, creating it if not found."""
     try:
@@ -93,60 +123,71 @@ def get_or_create_manufacturer(api: InvenTreeAPI, name: str) -> Optional[Company
 def upload_image_from_url(part: Part, url: str) -> None:
     """Download an image from *url* and attach it to *part*.
 
-    Validates that the response is a plausible image (Content-Type +
-    minimum size) before uploading.  Supplier CDNs — notably Mouser
-    behind PerimeterX — return HTTP 200 with a ~4 kB HTML bot-block
-    page when their browser-fingerprint check rejects the request; we
-    catch that here and log the first 80 bytes of the body so future
-    header-update needs are immediately visible.
+    For Mouser URLs, tries the HD variant first and falls back to the
+    original on failure.  Validates Content-Type + body size before
+    upload to catch CDN bot-block pages that come back as HTTP 200 +
+    HTML (see ``_image_headers`` docstring).
     """
     if not url:
         return
-    try:
-        resp = requests.get(url, timeout=20, headers=_image_headers(url))
-        resp.raise_for_status()
-    except Exception as exc:
-        logger.warning("Image download failed (%s): %s", url, exc)
-        return
 
-    content_type = resp.headers.get("Content-Type", "")
-    body = resp.content
-    if not content_type.startswith("image/") or len(body) < 200:
-        snippet = body[:80].decode("utf-8", errors="replace").strip()
-        logger.warning(
-            "Image rejected for %s (ct=%r size=%d). First 80 B: %r",
-            url, content_type, len(body), snippet,
-        )
-        return
+    # Build the list of URL candidates: HD first (if applicable), then original.
+    candidates: list[str] = []
+    hd = _try_mouser_hd_url(url)
+    if hd != url:
+        candidates.append(hd)
+    candidates.append(url)
 
-    # Determine extension from Content-Type — the URL extension may lie
-    # when the CDN does content-negotiation (e.g. Mouser delivers WebP
-    # from a `.jpg` URL when Accept includes image/webp).
-    if "jpeg" in content_type or "jpg" in content_type:
-        suffix = ".jpg"
-    elif "png" in content_type:
-        suffix = ".png"
-    elif "webp" in content_type:
-        suffix = ".webp"
-    elif "avif" in content_type:
-        suffix = ".avif"
-    elif "gif" in content_type:
-        suffix = ".gif"
-    else:
-        suffix = ".jpg"
+    for candidate in candidates:
+        try:
+            resp = requests.get(candidate, timeout=20, headers=_image_headers(candidate))
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.warning("Image download failed (%s): %s", candidate, exc)
+            continue
 
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(body)
-            tmp_path = tmp.name
-        part.uploadImage(tmp_path)
-        logger.info("Uploaded image to part %s", part.pk)
-    except Exception as exc:
-        logger.warning("Image upload failed for part %s: %s", part.pk, exc)
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        # Content-Type is case-insensitive per RFC 9110; lowercase once at read time.
+        content_type = resp.headers.get("Content-Type", "").lower()
+        body = resp.content
+        # 200 B floor: smaller than any real product thumbnail, larger than any
+        # plausible PerimeterX-block-HTML or empty-body error response.
+        if not content_type.startswith("image/") or len(body) < 200:
+            snippet = body[:80].decode("utf-8", errors="replace").strip()
+            logger.warning(
+                "Image rejected for %s (ct=%r size=%d). First 80 B: %r",
+                candidate, content_type, len(body), snippet,
+            )
+            continue
+
+        if "jpeg" in content_type or "jpg" in content_type:
+            suffix = ".jpg"
+        elif "png" in content_type:
+            suffix = ".png"
+        elif "webp" in content_type:
+            suffix = ".webp"
+        elif "avif" in content_type:
+            suffix = ".avif"
+        elif "gif" in content_type:
+            suffix = ".gif"
+        else:
+            suffix = ".jpg"
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(body)
+                tmp_path = tmp.name
+            part.uploadImage(tmp_path)
+            logger.info("Uploaded image to part %s (from %s)", part.pk, candidate)
+            return  # Erfolg — keine weiteren Fallbacks
+        except Exception as exc:
+            logger.warning("Image upload failed for part %s: %s", part.pk, exc)
+            return  # Upload-Fehler: kein Fallback, sonst evtl. doppelter Upload
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    logger.warning("No usable image obtained from any variant of %s", url)
 
 
 def _add_price_breaks(
