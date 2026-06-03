@@ -63,17 +63,83 @@ typischerweise nicht — billiger, effektiver Filter.
 
 Auch `wget` funktioniert mit denselben Headern (verifiziert).
 
-**Konkrete Änderungen:**
+**Defensive Implementierungs-Regel:**
+
+Auch wenn unsere Tests zeigen, dass fünf der sechs Header werte-egal sind,
+**setzen wir trotzdem überall realistische Werte ein**. Mouser/PerimeterX
+kann jederzeit nachschärfen und auf Wert-Plausibilität prüfen — dann
+hätten wir mit `Referer: "x"` einen still-failenden Job in der Auto-
+Release-Workflow. Defense in depth: tarne als echter Browser, nicht als
+„hat die Header-Namen gefüllt".
+
+**Konkrete Werte zum Hartcodieren (Stand 2026-06):**
+
+```python
+# Common Chrome 130 stable, Linux x64. Refresh quarterly via
+# https://www.useragentstring.com/pages/Chrome/ falls Mouser
+# alte Versions-Strings irgendwann blockt.
+_DESKTOP_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+def _image_headers(image_url: str) -> dict[str, str]:
+    """Browser-fingerprint headers für PerimeterX-protected CDNs.
+
+    Werte sind so gewählt, dass sie zu einem echten Browser-Request
+    passen — auch wenn PerimeterX heute (2026-06) nur Header-Präsenz
+    prüft. Verhindert Stillbruch falls sie nachschärfen.
+    """
+    parsed = urllib.parse.urlsplit(image_url)
+    host = parsed.netloc                # z.B. www.mouser.com
+    site_root = f"{parsed.scheme}://{host}/"
+    return {
+        "User-Agent":      _DESKTOP_UA,
+        "Accept":          "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer":         site_root,   # selbe Origin wie das Bild
+        "Sec-Fetch-Dest":  "image",
+        "Sec-Fetch-Mode":  "no-cors",
+        "Sec-Fetch-Site":  "same-origin",
+        "Sec-Ch-Ua":       '"Chromium";v="130", "Not.A/Brand";v="24"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Linux"',
+    }
+```
+
+Wichtige Designentscheidungen:
+- **Referer = Site-Root** des Image-Hosts (`https://www.mouser.com/`,
+  `https://www.lcsc.com/`). Konsistent mit `Sec-Fetch-Site: same-origin`.
+  Wenn wir je den Datasheet-PDF-Download proxen, dort dieselbe Logik.
+- **Accept-Language hardcodiert `en-US,en;q=0.9`** statt Locale-abhängig.
+  Wir sind ein deutsch-österreichischer Verein, aber unsere CI ist en-US-
+  Default und Mouser indexiert alles englisch — am wenigsten verdächtig.
+- **Sec-Ch-Ua Client-Hints** mit dazugepackt (über die isolierten
+  Mandatory-Header hinaus), weil Chrome sie immer mit-schickt. Stillen
+  PerimeterX-Updates am besten ausweichen.
+- **`_IOS_UA` aus `fetchers.py` bleibt** für die LCSC-API-Calls (LCSC
+  blockt iOS-UA nicht und der Code-Pfad ist verifiziert) — Image-Download
+  bekommt den neuen `_DESKTOP_UA`.
+
+**Konkrete Änderungen am Code:**
 - `client.py:upload_image_from_url`:
-  - Desktop-Chrome-UA statt `_IOS_UA` für nicht-LCSC-URLs.
-  - `Accept-Language` und die drei `Sec-Fetch-*` Header hinzufügen.
-  - Host-abhängiger Referer: LCSC → `lcsc.com`, Mouser → `mouser.com`,
-    sonst weglassen.
-- **Validierung nach Download:** `Content-Type` muss mit `image/`
-  starten. Sonst war's der PerimeterX-Block, nicht hochladen, WARN.
+  - `_image_headers(url)` statt der zwei hartkodierten Header.
+  - **Validierung nach Download:** `Content-Type` muss mit `image/`
+    starten **und** Body-Größe > 200 Bytes (PerimeterX-Block ist
+    ~4.6 kB HTML, ein „echtes" 1-Pixel-Tracking-Bild wäre <200 B —
+    valide kleine Mouser-Thumbnails sind ≥1 kB).
+  - Bei fehlgeschlagener Validierung: WARN-log mit ersten 80 Zeichen
+    des Bodys (sonst diagnostiziert man PerimeterX-Updates blind).
 - Optional Bonus: Mouser-API liefert `ImagePath` typischerweise als
-  `_SPL.jpg` (klein, 150px). URL-Transform `/images/` → `/hd/` holt
-  die ~1000px-Variante (auch verifiziert).
+  `_SPL.jpg` (klein, 150 px). URL-Transform `/images/` → `/hd/` holt
+  die ~1000-px-Variante (auch verifiziert mit ESP32-D0WDRH2-V3,
+  36 kB statt 3 kB).
+
+**Maintenance-Hinweis im Code-Kommentar:**
+> User-Agent vierteljährlich gegen current-stable-Chrome refreshen.
+> Falls dieser Block trotzdem irgendwann wieder failt:
+> `scripts/probe_mouser_headers.py` (s. Punkt 21 / Pytests) re-runnen,
+> Diff vom Header-Set hier dokumentieren.
 
 **Files:** `scripts/inventree_sync/client.py`.
 
