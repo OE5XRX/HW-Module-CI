@@ -15,7 +15,6 @@ from inventree.api import InvenTreeAPI
 from inventree.company import Company, ManufacturerPart, SupplierPart, SupplierPriceBreak
 from inventree.part import Part, PartCategory
 
-from .fetchers import _IOS_UA
 from .models import PartData
 
 logger = logging.getLogger(__name__)
@@ -92,34 +91,54 @@ def get_or_create_manufacturer(api: InvenTreeAPI, name: str) -> Optional[Company
 
 
 def upload_image_from_url(part: Part, url: str) -> None:
-    """Download an image from *url* and attach it to *part*."""
+    """Download an image from *url* and attach it to *part*.
+
+    Validates that the response is a plausible image (Content-Type +
+    minimum size) before uploading.  Supplier CDNs — notably Mouser
+    behind PerimeterX — return HTTP 200 with a ~4 kB HTML bot-block
+    page when their browser-fingerprint check rejects the request; we
+    catch that here and log the first 80 bytes of the body so future
+    header-update needs are immediately visible.
+    """
     if not url:
         return
     try:
-        resp = requests.get(url, timeout=20, headers={
-            "User-Agent": _IOS_UA,
-            "Referer": "https://www.lcsc.com/",
-        })
+        resp = requests.get(url, timeout=20, headers=_image_headers(url))
         resp.raise_for_status()
     except Exception as exc:
         logger.warning("Image download failed (%s): %s", url, exc)
         return
 
-    # Guess extension from Content-Type or URL
     content_type = resp.headers.get("Content-Type", "")
+    body = resp.content
+    if not content_type.startswith("image/") or len(body) < 200:
+        snippet = body[:80].decode("utf-8", errors="replace").strip()
+        logger.warning(
+            "Image rejected for %s (ct=%r size=%d). First 80 B: %r",
+            url, content_type, len(body), snippet,
+        )
+        return
+
+    # Determine extension from Content-Type — the URL extension may lie
+    # when the CDN does content-negotiation (e.g. Mouser delivers WebP
+    # from a `.jpg` URL when Accept includes image/webp).
     if "jpeg" in content_type or "jpg" in content_type:
         suffix = ".jpg"
     elif "png" in content_type:
         suffix = ".png"
     elif "webp" in content_type:
         suffix = ".webp"
+    elif "avif" in content_type:
+        suffix = ".avif"
+    elif "gif" in content_type:
+        suffix = ".gif"
     else:
-        suffix = os.path.splitext(url.split("?")[0])[-1] or ".jpg"
+        suffix = ".jpg"
 
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(resp.content)
+            tmp.write(body)
             tmp_path = tmp.name
         part.uploadImage(tmp_path)
         logger.info("Uploaded image to part %s", part.pk)
