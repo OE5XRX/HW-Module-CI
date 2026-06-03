@@ -40,23 +40,28 @@ und es kommt eine 4592-Byte „Access denied"-HTML-Seite mit HTTP 200
 zurück (die dann fälschlicherweise als „Bild" hochgeladen würde).
 
 **Fix-Strategie (Simple Header-Update):**
-Der minimale Header-Set für Mouser ist isoliert worden. Diese Header
-sind **alle mandatory**, sonst blockt PerimeterX:
+Das minimale Header-Set für Mouser ist exakt isoliert worden (Drop-One-
+und Value-Variation-Tests). Sechs Header sind **alle mandatory** — aber
+fast alle Werte sind völlig egal, PerimeterX prüft nur die *Präsenz*.
 
-```
-User-Agent:      Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
-                 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
-Accept-Language: en-US,en;q=0.9     (beliebiger Wert)
-Referer:         https://www.mouser.com/  (beliebiger Wert; sogar
-                 lcsc.com wird akzeptiert — Mouser validiert nicht
-                 gegen Sec-Fetch-Site)
-Sec-Fetch-Dest:  image
-Sec-Fetch-Mode:  no-cors
-Sec-Fetch-Site:  same-origin   (alles außer "none" geht)
-```
+| Header | Wert egal? | Was funktioniert | Was blockt |
+|---|---|---|---|
+| `User-Agent` | **Nein** | Browser-shaped UA (Chrome, Firefox, Safari, iOS) | `curl/X`, `python-requests/X` (Connection wird vorm Body gekillt), bloßes `Mozilla/5.0` |
+| `Accept-Language` | Ja | `en`, `xx`, `garbage`, `*`, `0` | Header nicht senden |
+| `Referer` | Ja | `https://www.mouser.com/`, `https://www.lcsc.com/`, `garbage`, `x` | Header nicht senden |
+| `Sec-Fetch-Dest` | Ja | `image`, `xxx`, `garbage` | Header nicht senden |
+| `Sec-Fetch-Mode` | Ja | `no-cors`, `cors`, `xxx` | Header nicht senden |
+| `Sec-Fetch-Site` | Ja | `same-origin`, `cross-site`, `none`, `xxx` | Header nicht senden |
 
 `Accept: image/*` ist optional; mit `image/webp` schickt Mouser WebP,
-ohne JPG (beides funktioniert, beides ist ein echtes Bild).
+ohne JPG (beides ist ein echtes Bild).
+
+PerimeterX prüft *Browser-Fingerprint*-Strukturen: ein „echter" Browser
+sendet seit Chrome 76 (2019) `Sec-Fetch-*` automatisch und hat
+zwangsläufig UA + Accept-Language + Referer. Bots/Scripts haben das
+typischerweise nicht — billiger, effektiver Filter.
+
+Auch `wget` funktioniert mit denselben Headern (verifiziert).
 
 **Konkrete Änderungen:**
 - `client.py:upload_image_from_url`:
