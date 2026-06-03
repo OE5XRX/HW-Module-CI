@@ -85,7 +85,7 @@ def _try_mouser_hd_url(url: str) -> str:
     if "mouser." not in url:
         return url
     # Order matters: try /lrg/ → /hd/ first (more specific), then /images/ → /hd/.
-    # Use rsplit so we hit the *variant-folder* /images/ near the SKU, not the
+    # Use rpartition so we hit the *variant-folder* /images/ near the SKU, not the
     # leading host-level /images/ in URLs like
     # https://www.mouser.at/images/<mfr>/images/<sku>_SPL.jpg.
     for needle in ("/lrg/", "/images/"):
