@@ -6,6 +6,7 @@ supplier records, manufacturer records, and price breaks.
 import logging
 import os
 import tempfile
+import urllib.parse
 from typing import Optional
 
 import requests
@@ -18,6 +19,51 @@ from .fetchers import _IOS_UA
 from .models import PartData
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Image-download headers
+# ---------------------------------------------------------------------------
+# PerimeterX (Mouser) + LCSC-CDN-defeating header set, verified 2026-06-03
+# against real CDNs.  Five of the six mandatory headers are presence-only
+# from PerimeterX's perspective today — we set realistic browser values
+# anyway so a future PerimeterX tightening doesn't silently break the
+# Auto-Release workflow.  See docs/superpowers/specs/2026-06-03-bug-
+# mouser-image-headers.md for the full analysis.
+#
+# Falls Image-Downloads später wieder 4–5 kB HTML statt Bild zurückgeben:
+#   1. Chrome-Version unten gegen current-stable refreshen
+#      (https://www.useragentstring.com/pages/Chrome/).
+#   2. `python3 scripts/probe_supplier_images.py` laufen lassen — zeigt
+#      sofort, ob das Problem an UA, Sec-Fetch-*, oder etwas Neuem liegt.
+#   3. Spec-Doc mit dem aktualisierten Befund updaten.
+
+_DESKTOP_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+
+def _image_headers(image_url: str) -> dict[str, str]:
+    """Browser-fingerprint headers for PerimeterX-protected supplier CDNs.
+
+    The same set works for both Mouser (PerimeterX) and LCSC (asset CDN),
+    so callers don't need to switch on host.
+    """
+    parts = urllib.parse.urlsplit(image_url)
+    site_root = f"{parts.scheme}://{parts.netloc}/"
+    return {
+        "User-Agent":         _DESKTOP_UA,
+        "Accept":             "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language":    "en-US,en;q=0.9",
+        "Referer":            site_root,
+        "Sec-Fetch-Dest":     "image",
+        "Sec-Fetch-Mode":     "no-cors",
+        "Sec-Fetch-Site":     "same-origin",
+        "Sec-Ch-Ua":          '"Chromium";v="130", "Not.A/Brand";v="24"',
+        "Sec-Ch-Ua-Mobile":   "?0",
+        "Sec-Ch-Ua-Platform": '"Linux"',
+    }
 
 
 def get_or_create_supplier(api: InvenTreeAPI, name: str) -> Optional[Company]:
