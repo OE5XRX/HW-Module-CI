@@ -459,6 +459,49 @@ def test_cost_report_generation(api: InvenTreeAPI) -> None:
     print(f"  PASS  cost-report generation (markdown len={len(md)}, notes patched)")
 
 
+def test_dry_run_no_side_effects(api: InvenTreeAPI) -> None:
+    """bom_export.py --dry-run produces stdout output, creates no Parts."""
+    import subprocess
+    import tempfile
+
+    csv_content = (
+        '"References","Quantity Per PCB","Part","Value","Footprint","LCSC","MOUSER"\n'
+        '"R1","1","R","10k","R_0805_2012Metric","",""\n'
+        '"R2","1","R","10k","R_0805_2012Metric","",""\n'
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as tmp:
+        tmp.write(csv_content)
+        csv_path = tmp.name
+
+    # Baseline part count before dry-run
+    before = len(Part.list(api))
+
+    proc = subprocess.run(
+        [
+            sys.executable, "scripts/bom_export.py",
+            "--csv_file", csv_path,
+            "--name", f"{PREFIX}DryRunTest",
+            "--version", "1.0",
+            "--pcb_image", "doc/Icon.png",
+            "--assembly_image", "doc/Icon.png",
+            "--dry-run",
+        ],
+        env={**os.environ},
+        capture_output=True, text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+
+    out = proc.stdout
+    assert "DRY-RUN:" in out, f"missing DRY-RUN marker in stdout:\n{out}\nSTDERR:\n{proc.stderr}"
+    assert "Would SKIP:" in out or "Would CREATE:" in out, f"missing decision lines:\n{out}"
+    assert "Summary:" in out, f"missing Summary line:\n{out}"
+
+    after = len(Part.list(api))
+    assert before == after, (
+        f"dry-run created {after - before} parts on the server (expected 0)")
+    print(f"  PASS  dry-run no side-effects (stdout {len(out)}B, parts unchanged)")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -485,7 +528,8 @@ def main() -> int:
                    test_parameter_sync_delta,
                    test_supplier_link_populated,
                    test_attachment_idempotent,
-                   test_cost_report_generation):
+                   test_cost_report_generation,
+                   test_dry_run_no_side_effects):
             try:
                 tc(api)
             except AssertionError as e:
