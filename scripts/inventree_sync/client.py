@@ -314,16 +314,56 @@ def find_existing_part(
 
 
 def find_part_by_name(api: InvenTreeAPI, name: str) -> Optional[Part]:
-    """Return the InvenTree Part with an exact name match, or None."""
+    """Return the InvenTree Part with an exact name match, or None.
+
+    Uses InvenTree's ``name=`` exact-filter (not ``search=`` which is a
+    substring match) so part names that share a prefix or substring don't
+    collide.  If multiple Parts have the same exact name (legal — e.g.
+    same name in different categories) the first is returned.
+
+    NOTE: Some InvenTree server versions silently ignore the ``name=``
+    filter and return all parts.  A post-filter on ``part.name == name``
+    is therefore always applied to guarantee an exact match.
+    """
     if not name:
         return None
     try:
-        results = Part.list(api, search=name)
-        for part in results:
-            if part.name == name:
-                return part
+        results = Part.list(api, name=name)
     except Exception as exc:
         logger.debug("Part name lookup failed for '%s': %s", name, exc)
+        return None
+    for part in results:
+        if part.name == name:
+            return part
+    return None
+
+
+def find_part_by_name_and_revision(
+    api: InvenTreeAPI, name: str, revision: str
+) -> Optional[Part]:
+    """Return the Part matching BOTH name AND revision, or None.
+
+    Used by ``bom_export.py`` to make PCB/Stencil/Assembly anlage
+    idempotent — if the same release tag is processed twice, the
+    second run should re-use the existing Part instead of trying to
+    create a duplicate (which would fail InvenTree's unique-together
+    constraint on name+revision).
+
+    NOTE: Some InvenTree server versions silently ignore the ``name=``/
+    ``revision=`` filters.  A post-filter on both attributes is
+    therefore always applied to guarantee an exact match.
+    """
+    if not name or not revision:
+        return None
+    try:
+        results = Part.list(api, name=name, revision=revision)
+    except Exception as exc:
+        logger.debug("Part name+revision lookup failed for '%s' rev %s: %s",
+                     name, revision, exc)
+        return None
+    for part in results:
+        if part.name == name and getattr(part, "revision", None) == revision:
+            return part
     return None
 
 
