@@ -77,11 +77,35 @@ def match_supplier_parts(api: InvenTreeAPI, entries: list[BomEntry]) -> None:
     """
     Match each BomEntry to its InvenTree Part via SupplierPart SKU lookup.
     Populates entry.inventree_part for every entry that has a supplier SKU.
+
+    Uses a batch ``SKU__in=[...]`` filter (one API call covering every SKU
+    referenced by the BOM) instead of fetching the full SupplierPart table.
+    Falls back to per-SKU queries if the API version does not support the
+    ``__in`` lookup — still N queries instead of one full-table scan.
     """
-    all_supplier_parts = SupplierPart.list(api)
-    sku_to_part: dict[str, Part] = {
-        sp.SKU: Part(api, pk=sp.part) for sp in all_supplier_parts
-    }
+    all_skus = sorted({
+        sku for entry in entries
+        for sku in entry.lcsc + entry.mouser
+        if sku
+    })
+    if not all_skus:
+        sku_to_part: dict[str, Part] = {}
+    else:
+        try:
+            supplier_parts = SupplierPart.list(api, SKU__in=all_skus)
+        except Exception as exc:
+            log.warning(
+                "SKU__in batch query failed (%s); falling back to per-SKU",
+                exc)
+            supplier_parts = []
+            for sku in all_skus:
+                try:
+                    supplier_parts.extend(SupplierPart.list(api, SKU=sku))
+                except Exception as exc2:
+                    log.debug("per-SKU lookup failed for %s: %s", sku, exc2)
+        sku_to_part = {
+            sp.SKU: Part(api, pk=sp.part) for sp in supplier_parts
+        }
 
     for entry in entries:
         if entry.inventree_part:
