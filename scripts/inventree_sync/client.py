@@ -294,6 +294,7 @@ def create_part_in_inventree(
                     "supplier": lcsc_supplier.pk,
                     "SKU": sku,
                     "manufacturer_part": None,
+                    "link": _supplier_url(lcsc_supplier.name, sku),
                 })
                 if part_data.price_breaks:
                     _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
@@ -312,6 +313,7 @@ def create_part_in_inventree(
                     "part": part.pk,
                     "supplier": mouser_supplier.pk,
                     "SKU": sku,
+                    "link": _supplier_url(mouser_supplier.name, sku),
                 })
                 if attach_mouser_prices:
                     _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
@@ -429,6 +431,24 @@ def _find_or_create_parameter_template(
         return None
 
 
+def _supplier_url(supplier_name: str, sku: str) -> str:
+    """Construct a stable product-page URL from supplier name + SKU.
+
+    Pattern-based (not API-based) so this is robust against supplier-
+    API schema changes.  Unknown suppliers return "" — caller passes
+    that to ``SupplierPart.link`` unchanged, leaving the field empty.
+    """
+    name = (supplier_name or "").lower()
+    sku = (sku or "").strip()
+    if not sku:
+        return ""
+    if "lcsc" in name:
+        return f"https://www.lcsc.com/product-detail/{sku}.html"
+    if "mouser" in name:
+        return f"https://www.mouser.com/ProductDetail/{sku}"
+    return ""
+
+
 def upload_parameters(
     api: InvenTreeAPI, part: Part, params: dict[str, str]
 ) -> None:
@@ -527,6 +547,7 @@ def ensure_supplier_parts(
                     "part": part.pk,
                     "supplier": lcsc_supplier.pk,
                     "SKU": sku,
+                    "link": _supplier_url(lcsc_supplier.name, sku),
                 })
                 existing_skus.add(sku)
                 if part_data.price_breaks:
@@ -546,6 +567,7 @@ def ensure_supplier_parts(
                     "part": part.pk,
                     "supplier": mouser_supplier.pk,
                     "SKU": sku,
+                    "link": _supplier_url(mouser_supplier.name, sku),
                 })
                 existing_skus.add(sku)
                 if attach_mouser_prices:

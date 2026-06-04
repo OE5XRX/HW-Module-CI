@@ -298,6 +298,55 @@ def test_parameter_sync_delta(api: InvenTreeAPI) -> None:
     print(f"  PASS  parameter sync delta ({snapshot2!r})")
 
 
+def test_supplier_link_populated(api: InvenTreeAPI) -> None:
+    """create_part_in_inventree(): SupplierPart.link is populated for LCSC + Mouser."""
+    from inventree_sync.client import create_part_in_inventree
+    from inventree_sync.models import PartData
+
+    lcsc = _track_company(Company.create(api, {
+        "name": f"{PREFIX} LCSC", "is_supplier": True,
+    }))
+    mouser = _track_company(Company.create(api, {
+        "name": f"{PREFIX} Mouser", "is_supplier": True,
+    }))
+
+    lcsc_sku = f"{PREFIX}-LCSC-LNK"
+    mouser_sku = f"{PREFIX}-MOU-LNK"
+
+    pdata = PartData(
+        mpn=f"{PREFIX}-MPN-LNK",
+        manufacturer=f"{PREFIX} Mfr-LNK",
+        description="link test",
+        lcsc_sku=lcsc_sku,
+        mouser_sku=mouser_sku,
+    )
+    part = create_part_in_inventree(
+        api,
+        name=f"{PREFIX} LinkPart",
+        part_data=pdata,
+        category=None,
+        lcsc_supplier=lcsc,
+        mouser_supplier=mouser,
+        lcsc_skus=[lcsc_sku],
+        mouser_skus=[mouser_sku],
+    )
+    assert part is not None
+    _track(part)
+
+    sps = SupplierPart.list(api, part=part.pk)
+    by_sku = {sp.SKU: sp for sp in sps}
+    assert lcsc_sku in by_sku, f"LCSC SupplierPart missing; got {list(by_sku)}"
+    assert mouser_sku in by_sku, f"Mouser SupplierPart missing; got {list(by_sku)}"
+
+    lcsc_expected = f"https://www.lcsc.com/product-detail/{lcsc_sku}.html"
+    mouser_expected = f"https://www.mouser.com/ProductDetail/{mouser_sku}"
+    assert by_sku[lcsc_sku].link == lcsc_expected, (
+        f"LCSC link {by_sku[lcsc_sku].link!r} != {lcsc_expected!r}")
+    assert by_sku[mouser_sku].link == mouser_expected, (
+        f"Mouser link {by_sku[mouser_sku].link!r} != {mouser_expected!r}")
+    print(f"  PASS  supplier link populated (LCSC + Mouser)")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -321,7 +370,8 @@ def main() -> int:
                    test_assembly_silently_reuse,
                    test_bom_idempotent,
                    test_multi_sku_supplier_parts,
-                   test_parameter_sync_delta):
+                   test_parameter_sync_delta,
+                   test_supplier_link_populated):
             try:
                 tc(api)
             except AssertionError as e:
