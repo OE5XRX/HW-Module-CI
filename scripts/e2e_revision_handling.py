@@ -215,12 +215,18 @@ def test_multi_sku_supplier_parts(api: InvenTreeAPI) -> None:
         "name": f"{PREFIX} TestSupplier", "is_supplier": True,
     }))
 
+    # SKUs prefixed with RUN_ID so re-running this test on the same server
+    # doesn't collide (SKU is server-unique; SupplierPart cleanup relies on
+    # cascade-delete which we don't explicitly verify here).
+    sku_a = f"{PREFIX}-LCSC-A"
+    sku_b = f"{PREFIX}-LCSC-B"
+
     pdata = PartData(
         mpn=f"{PREFIX}-MPN",
         manufacturer=f"{PREFIX} TestMfr",
         description="multi-sku test",
-        lcsc_sku="DUMMY-LCSC-A",   # used as the "primary" by current code,
-                                    # but Task 5 must also create the rest
+        lcsc_sku=sku_a,   # used as the "primary" by current code,
+                          # but Task 5 must also create the rest
     )
     # The new signature must accept a SKU list. We will pass two SKUs and
     # assert both end up as SupplierParts.
@@ -231,7 +237,7 @@ def test_multi_sku_supplier_parts(api: InvenTreeAPI) -> None:
         category=None,
         lcsc_supplier=supplier,
         mouser_supplier=None,
-        lcsc_skus=["DUMMY-LCSC-A", "DUMMY-LCSC-B"],
+        lcsc_skus=[sku_a, sku_b],
         mouser_skus=[],
     )
     assert part is not None, "create_part_in_inventree returned None"
@@ -239,7 +245,7 @@ def test_multi_sku_supplier_parts(api: InvenTreeAPI) -> None:
 
     sps = SupplierPart.list(api, part=part.pk)
     skus = sorted(sp.SKU for sp in sps)
-    assert skus == ["DUMMY-LCSC-A", "DUMMY-LCSC-B"], (
+    assert skus == [sku_a, sku_b], (
         f"expected both SKUs as SupplierParts, got {skus}")
     print(f"  PASS  Multi-SKU SupplierParts ({skus})")
 

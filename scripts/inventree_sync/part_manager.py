@@ -132,14 +132,17 @@ def ensure_parts_exist(
         if existing:
             entry.inventree_part.append(existing)
             logger.info("Found existing part for %s: pk=%s", entry.reference, existing.pk)
-            # Ensure all alternative SKUs are attached to that existing part.
-            part_data = _fetch_and_merge(lcsc_fetcher, mouser_fetcher, lcsc_sku, mouser_sku)
-            if part_data is not None:
-                ensure_supplier_parts(
-                    api, existing, part_data,
-                    lcsc_supplier, mouser_supplier,
-                    lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
-                )
+            # Only fetch + attach alternates when the entry actually HAS
+            # alternates. Single-SKU cache-hits stay zero-network (the
+            # original pre-Multi-SKU behavior).
+            if len(lcsc_skus) + len(mouser_skus) > 1:
+                part_data = _fetch_and_merge(lcsc_fetcher, mouser_fetcher, lcsc_sku, mouser_sku)
+                if part_data is not None:
+                    ensure_supplier_parts(
+                        api, existing, part_data,
+                        lcsc_supplier, mouser_supplier,
+                        lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+                    )
             continue
 
         # Fetch data from suppliers (primary SKU)
