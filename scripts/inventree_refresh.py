@@ -126,7 +126,15 @@ def refresh_part(
                     sp_supplier_name = Company(api, pk=int(sp.supplier)).name or ""
                 except Exception:
                     sp_supplier_name = ""
-            sp_is_mouser = "mouser" in sp_supplier_name.lower()
+            sp_supplier_lower = sp_supplier_name.lower()
+            sp_is_lcsc = "lcsc" in sp_supplier_lower
+            sp_is_mouser = "mouser" in sp_supplier_lower
+            # Skip non-LCSC/Mouser suppliers entirely (e.g. DigiKey, manual
+            # suppliers). This script only manages LCSC/Mouser data; touching
+            # other suppliers' price breaks would silently wipe their real
+            # prices with the LCSC-primary merged set.
+            if not (sp_is_lcsc or sp_is_mouser):
+                continue
             if sp_is_mouser and not apply_to_mouser:
                 continue  # preserve real Mouser prices
 
