@@ -12,10 +12,22 @@ from inventree_sync.categories import _normalize_value
 
 
 def test_normalize_strip_omega():
-    """Unicode Ohm signs (Ω and Ohm-Sign) are stripped."""
-    assert _normalize_value("10kΩ") == "10k"      # U+03A9 GREEK CAPITAL LETTER OMEGA
-    assert _normalize_value("4.7Ω") == "4.7"      # bare omega
-    assert _normalize_value("1MΩ") == "1M"        # mega preserved (see lowercase test)
+    """Unicode Ohm signs (U+03A9 GREEK CAPITAL LETTER OMEGA and
+    U+2126 OHM SIGN) are both stripped.
+
+    Both codepoints render identically, but they're distinct in source:
+    KiCad symbol libraries split between them. Both must canonicalize
+    to the same string or "10kΩ" gets two different InvenTree parts.
+    """
+    # U+03A9 GREEK CAPITAL LETTER OMEGA
+    assert _normalize_value("10kΩ") == "10k"
+    assert _normalize_value("4.7Ω") == "4.7"
+    assert _normalize_value("1MΩ") == "1M"
+    # U+2126 OHM SIGN — separate codepoint. Would have caught the
+    # original "_OMEGA_CHARS defines U+03A9 twice" bug.
+    assert _normalize_value("10kΩ") == "10k"
+    assert _normalize_value("4.7Ω") == "4.7"
+    assert _normalize_value("1MΩ") == "1M"
 
 
 def test_normalize_uppercase_k_to_lowercase():

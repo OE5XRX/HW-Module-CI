@@ -417,15 +417,21 @@ def _resolve_manufacturer_name(api: InvenTreeAPI, manufacturer_pk: int) -> str:
     Empty string when the Company lookup fails — caller treats that as
     'manufacturer not found' which fails the find_part_by_mpn_and_manufacturer
     match safely.
+
+    Failures (empty name or exception) are NOT cached: a transient API
+    error must not turn into a permanent mismatch for the rest of the
+    process — that would defeat MPN+manufacturer dedup and cause
+    duplicate parts to be created later in the same run.
     """
     cached = _manufacturer_name_cache.get(manufacturer_pk)
-    if cached is not None:
+    if cached:
         return cached
     try:
         name = Company(api, pk=manufacturer_pk).name or ""
     except Exception:
-        name = ""
-    _manufacturer_name_cache[manufacturer_pk] = name
+        return ""
+    if name:
+        _manufacturer_name_cache[manufacturer_pk] = name
     return name
 
 

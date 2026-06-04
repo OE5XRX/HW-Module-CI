@@ -33,9 +33,13 @@ def _make_retry_session() -> requests.Session:
       backoff_factor=2     — sleeps 0s, 2s, 4s between attempts
       status_forcelist     — 429 (rate-limit) + 5xx server errors
       allowed_methods      — GET (LCSC detail) + POST (LCSC search, Mouser)
-      raise_on_status=False — let calling code see the final response;
-                              both fetchers return parseable JSON even on
-                              some 4xx and we want to log the body.
+      raise_on_status=False — the urllib3 retry layer does not raise on
+                              the final response; the requests-level
+                              ``resp.raise_for_status()`` call in each
+                              fetcher still handles 4xx/5xx that aren't
+                              in status_forcelist (e.g. 404). Keeping
+                              this False here avoids double-raising
+                              between the two layers.
 
     Image downloads in client.py.upload_image_from_url do NOT use this
     session — PerimeterX blocks are not transient and a retry only

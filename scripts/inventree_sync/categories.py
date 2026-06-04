@@ -80,7 +80,7 @@ def extract_package(footprint: str) -> str:
 #   Ω (U+03A9) GREEK CAPITAL LETTER OMEGA  → KiCad uses this for ohms
 #   Ω (U+2126) OHM SIGN                    → some libraries use this instead
 #   µ (U+00B5) MICRO SIGN                  → micro (e.g. 4.7µF)
-_OMEGA_CHARS = ("Ω", "Ω")
+_OMEGA_CHARS = ("Ω", "Ω")
 _MICRO_CHAR = "µ"
 
 # Known unit/SI-prefix tokens used in component values. Order is purely
