@@ -459,6 +459,57 @@ def test_cost_report_generation(api: InvenTreeAPI) -> None:
     print(f"  PASS  cost-report generation (markdown len={len(md)}, notes patched)")
 
 
+def test_refresh_idempotent(api: InvenTreeAPI) -> None:
+    """inventree_refresh: idempotent + a no-op on a Part it already refreshed."""
+    import subprocess
+    # Create a throwaway Part with a real LCSC SKU so the refresh has work
+    # to do. C17414 = Uniroyal 10kΩ 0805 (used elsewhere in our PR-1 probes).
+    cat = _ensure_category(api, f"{PREFIX} cat")
+    # Always create a cleanup-safe LCSC supplier. Name must contain "lcsc"
+    # (case-insensitive) for collect_parts_to_refresh to discover it.
+    # Suffix "Refresh" to avoid collision with the LCSC company already
+    # created by test_supplier_link_populated (server enforces
+    # unique (name, email) on Company).
+    lcsc_supplier = _track_company(Company.create(api, {
+        "name": f"{PREFIX} LCSC Refresh", "is_supplier": True,
+    }))
+
+    target = _track(Part.create(api, {
+        "name": f"{PREFIX} RefreshTest",
+        "description": "",  # empty so refresh will populate it
+        "active": True, "component": True, "purchaseable": True,
+    }))
+    SupplierPart.create(api, {
+        "part": target.pk, "supplier": lcsc_supplier.pk, "SKU": "C17414",
+    })
+
+    # MouserFetcher.__init__ requires MOUSER_API_KEY even when no Mouser
+    # SKUs exist. Test uses only LCSC, so a dummy key is fine — Mouser API
+    # is never called for the test Part.
+    sub_env = {**os.environ}
+    sub_env.setdefault("MOUSER_API_KEY", "dummy-for-e2e-test")
+
+    # First run: should populate fields
+    proc1 = subprocess.run(
+        [sys.executable, "scripts/inventree_refresh.py"],
+        env=sub_env, capture_output=True, text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert "Refresh complete:" in proc1.stderr or "Refresh complete:" in proc1.stdout, (
+        f"refresh did not finish cleanly:\nSTDOUT:\n{proc1.stdout}\nSTDERR:\n{proc1.stderr}")
+
+    # Second run: should also complete without crashing (idempotent).
+    proc2 = subprocess.run(
+        [sys.executable, "scripts/inventree_refresh.py"],
+        env=sub_env, capture_output=True, text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert proc2.returncode == 0, (
+        f"second refresh exit={proc2.returncode}:\n"
+        f"STDOUT:\n{proc2.stdout}\nSTDERR:\n{proc2.stderr}")
+    print("  PASS  refresh idempotent (2 runs, exit 0, no crash)")
+
+
 def test_dry_run_no_side_effects(api: InvenTreeAPI) -> None:
     """bom_export.py --dry-run produces stdout output, creates no Parts."""
     import subprocess
@@ -536,7 +587,8 @@ def main() -> int:
                    test_supplier_link_populated,
                    test_attachment_idempotent,
                    test_cost_report_generation,
-                   test_dry_run_no_side_effects):
+                   test_dry_run_no_side_effects,
+                   test_refresh_idempotent):
             try:
                 tc(api)
             except AssertionError as e:
