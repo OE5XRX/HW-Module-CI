@@ -57,3 +57,19 @@ def test_parse_attributes_duplicate_name_last_wins():
         ],
     }
     assert MouserFetcher._parse_attributes(product) == {"Resistance": "10.1 kOhms"}
+
+
+def test_parse_attributes_non_string_coerced():
+    """Mouser sometimes returns numeric AttributeValue for numeric-only specs."""
+    product = {
+        "ProductAttributes": [
+            {"AttributeName": "Operating Temperature (Min)", "AttributeValue": -40},
+            {"AttributeName": "Operating Temperature (Max)", "AttributeValue": 85},
+            {"AttributeName": "Voltage", "AttributeValue": 3.3},
+        ],
+    }
+    assert MouserFetcher._parse_attributes(product) == {
+        "Operating Temperature (Min)": "-40",
+        "Operating Temperature (Max)": "85",
+        "Voltage": "3.3",
+    }

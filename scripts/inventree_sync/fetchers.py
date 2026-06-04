@@ -254,11 +254,18 @@ class MouserFetcher:
         "AttributeValue": str} pairs.  We strip both sides and skip empty
         rows.  If a name appears multiple times, the last value wins
         (Mouser does emit duplicates occasionally for unit-aware fields).
+        Non-string values are coerced via ``str()`` because Mouser occasionally
+        returns numeric values for numeric-only specs (e.g. ``-40`` for an
+        operating-temperature minimum).  None values are skipped.
         """
         params: dict[str, str] = {}
         for attr in product.get("ProductAttributes") or []:
-            name = (attr.get("AttributeName") or "").strip()
-            value = (attr.get("AttributeValue") or "").strip()
+            name_raw = attr.get("AttributeName")
+            value_raw = attr.get("AttributeValue")
+            if name_raw is None or value_raw is None:
+                continue
+            name = str(name_raw).strip()
+            value = str(value_raw).strip()
             if not name or not value:
                 continue
             params[name] = value
