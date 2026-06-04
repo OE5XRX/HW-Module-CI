@@ -9,8 +9,9 @@ production code path, and verifies the Part now has an image attached.
 Cleans up the test Part at the end unless KEEP_TEST_PART=1.
 
 Required env vars:
-    INVENTREE_API_HOST   — InvenTree server URL
-    INVENTREE_API_TOKEN  — API token (or USERNAME + PASSWORD)
+    INVENTREE_API_HOST       — InvenTree server URL
+    INVENTREE_API_TOKEN      — API token
+    (or INVENTREE_API_USERNAME + INVENTREE_API_PASSWORD instead)
 
 Optional env vars:
     TEST_CATEGORY_PK     — InvenTree category PK for the test Part.

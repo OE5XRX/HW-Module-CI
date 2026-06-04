@@ -62,7 +62,7 @@ def _image_headers(image_url: str) -> dict[str, str]:
     site_root = f"{parts.scheme}://{parts.netloc}/"
     return {
         "User-Agent":         _DESKTOP_UA,
-        "Accept":             "image/jpeg,image/png,image/*,*/*;q=0.8",
+        "Accept":             "image/jpeg,image/png,image/webp;q=0,image/avif;q=0,image/*,*/*;q=0.8",
         "Accept-Language":    "en-US,en;q=0.9",
         "Referer":            site_root,
         "Sec-Fetch-Dest":     "image",
@@ -172,14 +172,14 @@ def upload_image_from_url(part: Part, url: str) -> None:
             suffix = ".jpg"
         elif "png" in content_type:
             suffix = ".png"
-        elif "webp" in content_type:
-            suffix = ".webp"
-        elif "avif" in content_type:
-            suffix = ".avif"
-        elif "gif" in content_type:
-            suffix = ".gif"
         else:
-            suffix = ".jpg"
+            # Reject WebP/AVIF/GIF/etc. — see _image_headers docstring for the
+            # InvenTree-compatibility rationale. Matches probe_supplier_images.py.
+            logger.warning(
+                "Image rejected for %s: non-jpeg/png ct=%r (refresh _image_headers Accept?)",
+                candidate, content_type,
+            )
+            continue
 
         tmp_path = None
         try:
