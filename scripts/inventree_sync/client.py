@@ -6,6 +6,7 @@ supplier records, manufacturer records, and price breaks.
 import logging
 import os
 import tempfile
+import urllib.parse
 from typing import Optional
 
 import requests
@@ -14,10 +15,93 @@ from inventree.api import InvenTreeAPI
 from inventree.company import Company, ManufacturerPart, SupplierPart, SupplierPriceBreak
 from inventree.part import Part, PartCategory
 
-from .fetchers import _IOS_UA
 from .models import PartData
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Image-download headers
+# ---------------------------------------------------------------------------
+# PerimeterX (Mouser) + LCSC-CDN-defeating header set, verified 2026-06-03
+# against real CDNs.  Five of the six mandatory headers are presence-only
+# from PerimeterX's perspective today — we set realistic browser values
+# anyway so a future PerimeterX tightening doesn't silently break the
+# Auto-Release workflow.  See docs/superpowers/specs/2026-06-03-bug-
+# mouser-image-headers.md for the full analysis.
+#
+# Falls Image-Downloads später wieder 4–5 kB HTML statt Bild zurückgeben:
+#   1. Chrome-Version unten gegen current-stable refreshen
+#      (https://www.useragentstring.com/pages/Chrome/).
+#   2. `python3 scripts/probe_supplier_images.py` laufen lassen — zeigt
+#      sofort, ob das Problem an UA, Sec-Fetch-*, oder etwas Neuem liegt.
+#   3. Spec-Doc mit dem aktualisierten Befund updaten.
+
+_DESKTOP_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
+
+
+def _image_headers(image_url: str) -> dict[str, str]:
+    """Browser-fingerprint headers for PerimeterX-protected supplier CDNs.
+
+    The same set works for both Mouser (PerimeterX) and LCSC (asset CDN),
+    so callers don't need to switch on host.
+
+    Accept intentionally excludes ``image/webp`` and ``image/avif``:
+    Mouser does content-negotiation and would otherwise deliver WebP,
+    but not every InvenTree installation has Pillow built with WebP
+    support, and InvenTree's stored-image rendering varies by version
+    across the front-end.  JPEG/PNG yields universal compatibility at
+    the cost of ~80 % larger files — acceptable trade-off for a part
+    catalog that has a handful of MB per release at most.  Verified
+    2026-06-03 against both CDNs.
+    """
+    parts = urllib.parse.urlsplit(image_url)
+    site_root = f"{parts.scheme}://{parts.netloc}/"
+    return {
+        "User-Agent":         _DESKTOP_UA,
+        "Accept":             "image/jpeg,image/png,image/webp;q=0,image/avif;q=0,image/*,*/*;q=0.8",
+        "Accept-Language":    "en-US,en;q=0.9",
+        "Referer":            site_root,
+        "Sec-Fetch-Dest":     "image",
+        "Sec-Fetch-Mode":     "no-cors",
+        "Sec-Fetch-Site":     "same-origin",
+        "Sec-Ch-Ua":          '"Chromium";v="130", "Not.A/Brand";v="24"',
+        "Sec-Ch-Ua-Mobile":   "?0",
+        "Sec-Ch-Ua-Platform": '"Linux"',
+    }
+
+
+def _try_mouser_hd_url(url: str) -> str:
+    """Upgrade a Mouser thumbnail URL to its HD variant when possible.
+
+    The Mouser API typically returns paths like
+        https://www.mouser.com/images/<mfr>/lrg/<sku>_SPL.jpg
+        https://www.mouser.com/images/<mfr>/images/<sku>_SPL.jpg
+    The same path with ``/hd/`` in place of ``/lrg/`` or ``/images/``
+    returns a ~1000-px version (10–20× larger).  Callers are expected
+    to fall back to *url* on 404/validation-fail.
+
+    Examples
+    --------
+    >>> _try_mouser_hd_url("https://www.mouser.com/images/ti/lrg/X_t.jpg")
+    'https://www.mouser.com/images/ti/hd/X_t.jpg'
+    >>> _try_mouser_hd_url("https://www.lcsc.com/foo.jpg")
+    'https://www.lcsc.com/foo.jpg'
+    """
+    if "mouser." not in url:
+        return url
+    # Order matters: try /lrg/ → /hd/ first (more specific), then /images/ → /hd/.
+    # Use rpartition so we hit the *variant-folder* /images/ near the SKU, not the
+    # leading host-level /images/ in URLs like
+    # https://www.mouser.at/images/<mfr>/images/<sku>_SPL.jpg.
+    for needle in ("/lrg/", "/images/"):
+        if needle in url:
+            head, _, tail = url.rpartition(needle)
+            return f"{head}/hd/{tail}"
+    return url
 
 
 def get_or_create_supplier(api: InvenTreeAPI, name: str) -> Optional[Company]:
@@ -46,42 +130,73 @@ def get_or_create_manufacturer(api: InvenTreeAPI, name: str) -> Optional[Company
 
 
 def upload_image_from_url(part: Part, url: str) -> None:
-    """Download an image from *url* and attach it to *part*."""
+    """Download an image from *url* and attach it to *part*.
+
+    For Mouser URLs, tries the HD variant first and falls back to the
+    original on failure.  Validates Content-Type + body size before
+    upload to catch CDN bot-block pages that come back as HTTP 200 +
+    HTML (see ``_image_headers`` docstring).
+    """
     if not url:
         return
-    try:
-        resp = requests.get(url, timeout=20, headers={
-            "User-Agent": _IOS_UA,
-            "Referer": "https://www.lcsc.com/",
-        })
-        resp.raise_for_status()
-    except Exception as exc:
-        logger.warning("Image download failed (%s): %s", url, exc)
-        return
 
-    # Guess extension from Content-Type or URL
-    content_type = resp.headers.get("Content-Type", "")
-    if "jpeg" in content_type or "jpg" in content_type:
-        suffix = ".jpg"
-    elif "png" in content_type:
-        suffix = ".png"
-    elif "webp" in content_type:
-        suffix = ".webp"
-    else:
-        suffix = os.path.splitext(url.split("?")[0])[-1] or ".jpg"
+    # Build the list of URL candidates: HD first (if applicable), then original.
+    candidates: list[str] = []
+    hd = _try_mouser_hd_url(url)
+    if hd != url:
+        candidates.append(hd)
+    candidates.append(url)
 
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(resp.content)
-            tmp_path = tmp.name
-        part.uploadImage(tmp_path)
-        logger.info("Uploaded image to part %s", part.pk)
-    except Exception as exc:
-        logger.warning("Image upload failed for part %s: %s", part.pk, exc)
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    for candidate in candidates:
+        try:
+            resp = requests.get(candidate, timeout=20, headers=_image_headers(candidate))
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.warning("Image download failed (%s): %s", candidate, exc)
+            continue
+
+        # Content-Type is case-insensitive per RFC 9110; lowercase once at read time.
+        content_type = resp.headers.get("Content-Type", "").lower()
+        body = resp.content
+        # 200 B floor: smaller than any real product thumbnail, larger than any
+        # plausible PerimeterX-block-HTML or empty-body error response.
+        if not content_type.startswith("image/") or len(body) < 200:
+            snippet = body[:80].decode("utf-8", errors="replace").strip()
+            logger.warning(
+                "Image rejected for %s (ct=%r size=%d). First 80 B: %r",
+                candidate, content_type, len(body), snippet,
+            )
+            continue
+
+        if "jpeg" in content_type or "jpg" in content_type:
+            suffix = ".jpg"
+        elif "png" in content_type:
+            suffix = ".png"
+        else:
+            # Reject WebP/AVIF/GIF/etc. — see _image_headers docstring for the
+            # InvenTree-compatibility rationale. Matches probe_supplier_images.py.
+            logger.warning(
+                "Image rejected for %s: non-jpeg/png ct=%r (refresh _image_headers Accept?)",
+                candidate, content_type,
+            )
+            continue
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(body)
+                tmp_path = tmp.name
+            part.uploadImage(tmp_path)
+            logger.info("Uploaded image to part %s (from %s)", part.pk, candidate)
+            return  # Erfolg — keine weiteren Fallbacks
+        except Exception as exc:
+            logger.warning("Image upload failed for part %s: %s", part.pk, exc)
+            return  # Upload-Fehler: kein Fallback, sonst evtl. doppelter Upload
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    logger.warning("No usable image obtained from any variant of %s", url)
 
 
 def _add_price_breaks(
