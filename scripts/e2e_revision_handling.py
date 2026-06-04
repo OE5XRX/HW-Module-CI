@@ -347,6 +347,62 @@ def test_supplier_link_populated(api: InvenTreeAPI) -> None:
     print(f"  PASS  supplier link populated (LCSC + Mouser)")
 
 
+def test_attachment_idempotent(api: InvenTreeAPI) -> None:
+    """attach_kibot_outputs(): idempotent — second call adds nothing."""
+    import tempfile
+    from bom_export import create_assembly_part, create_pcb_part, create_stencil_part
+    from inventree_sync.attachments import attach_kibot_outputs
+
+    cat = _ensure_category(api, f"{PREFIX} cat")
+    pcb = _track(create_pcb_part(api, cat, f"{PREFIX} AttachTest", "1.0", image=None))
+    assembly = _track(create_assembly_part(api, cat, f"{PREFIX} AttachTest", "1.0", image=None))
+    stencil = _track(create_stencil_part(api, cat, f"{PREFIX} AttachTest", "1.0", image=None))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        proj = f"{PREFIX}-Attach"
+        # Files matching the mapping patterns:
+        (out / f"{proj}.step").write_text("dummy STEP")              # → PCB
+        (out / f"{proj}-3D_top.png").write_bytes(b"PNGbytes" * 30)    # → PCB
+        (out / f"{proj}-3D_bottom.png").write_bytes(b"PNGbytes" * 30) # → PCB
+        (out / f"{proj}-stencil_top.svg").write_text("dummy SVG")     # → Stencil
+        (out / "Fabrication").mkdir()
+        (out / "Fabrication" / f"{proj}-stencil.zip").write_bytes(b"ZIPbytes" * 30)  # → Stencil
+        (out / f"{proj}-schematic.pdf").write_text("dummy PDF")       # → Assembly
+        (out / f"{proj}-bom.html").write_text("dummy BOM HTML")        # → Assembly
+        (out / f"{proj}-bom.csv").write_text("dummy BOM CSV")          # → Assembly
+        (out / f"{proj}-ibom.html").write_text("dummy IBOM")           # → Assembly
+        # Skipped files (already Part.image):
+        (out / f"{proj}-3D_top-with.png").write_bytes(b"skip")
+        (out / f"{proj}-3D_top-without.png").write_bytes(b"skip")
+        (out / f"{proj}-stencil_top.png").write_bytes(b"skip")
+
+        # First call: should land everything except the 3 skipped images.
+        attach_kibot_outputs(api, pcb, assembly, stencil, out)
+        n_pcb_1 = len(pcb.getAttachments())
+        n_assembly_1 = len(assembly.getAttachments())
+        n_stencil_1 = len(stencil.getAttachments())
+        total_1 = n_pcb_1 + n_assembly_1 + n_stencil_1
+        # Expected attached:
+        #   PCB: .step + 3D_top + 3D_bottom = 3
+        #   Assembly: schematic + bom.html + bom.csv + ibom.html = 4
+        #   Stencil: stencil_top.svg + Fabrication/stencil.zip = 2
+        # Total = 9. Skipped: 3 image files. No double-attach.
+        assert total_1 == 9, (
+            f"expected 9 attachments after first call, got {total_1} "
+            f"(pcb={n_pcb_1}, assembly={n_assembly_1}, stencil={n_stencil_1})")
+
+        # Second call: idempotent — no new uploads.
+        attach_kibot_outputs(api, pcb, assembly, stencil, out)
+        n_pcb_2 = len(pcb.getAttachments())
+        n_assembly_2 = len(assembly.getAttachments())
+        n_stencil_2 = len(stencil.getAttachments())
+        total_2 = n_pcb_2 + n_assembly_2 + n_stencil_2
+        assert total_2 == total_1, (
+            f"not idempotent: first total={total_1}, second total={total_2}")
+        print(f"  PASS  attachment idempotent (total={total_1}, second run no-op)")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -371,7 +427,8 @@ def main() -> int:
                    test_bom_idempotent,
                    test_multi_sku_supplier_parts,
                    test_parameter_sync_delta,
-                   test_supplier_link_populated):
+                   test_supplier_link_populated,
+                   test_attachment_idempotent):
             try:
                 tc(api)
             except AssertionError as e:
