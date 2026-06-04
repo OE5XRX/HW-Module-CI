@@ -148,21 +148,22 @@ jobs:
       # INVENTREE_API_HOST, INVENTREE_API_TOKEN and MOUSER_API_KEY
       # org-secrets point at the new instance.
       #
-      # - name: Generate parts on InvenTree server
-      #   if: always()
-      #   continue-on-error: true
-      #   shell: bash
-      #   env:
-      #     INVENTREE_API_TOKEN: ${{ secrets.INVENTREE_API_TOKEN }}
-      #     INVENTREE_API_HOST:  ${{ secrets.INVENTREE_API_HOST }}
-      #     MOUSER_API_KEY:      ${{ secrets.MOUSER_API_KEY }}
-      #   run: |
-      #     set -euo pipefail
-      #     pip install -r _ci/scripts/requirements.txt
-      #     python3 _ci/scripts/bom_export.py \
-      #       --csv_file       "output/${{ steps.setup.outputs.project-name }}-bom.csv" \
-      #       --name           "${{ github.event.repository.name }}" \
-      #       --version        "${{ github.ref_name }}" \
-      #       --pcb_image      "output/${{ steps.setup.outputs.project-name }}-3D_top-without.png" \
-      #       --assembly_image "output/${{ steps.setup.outputs.project-name }}-3D_top-with.png" \
-      #       --stencil_image  "output/${{ steps.setup.outputs.project-name }}-stencil_top.png"
+      - name: Generate parts on InvenTree server
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          INVENTREE_API_TOKEN: ${{ secrets.INVENTREE_API_TOKEN }}
+          INVENTREE_API_HOST:  ${{ secrets.INVENTREE_API_HOST }}
+          MOUSER_API_KEY:      ${{ secrets.MOUSER_API_KEY }}
+        run: |
+          set -euo pipefail
+          pip install -r _ci/scripts/requirements.txt
+          python3 _ci/scripts/bom_export.py \
+            --csv_file       "output/${{ steps.setup.outputs.project-name }}-bom.csv" \
+            --name           "${{ github.event.repository.name }}" \
+            --version        "${{ github.ref_name }}" \
+            --pcb_image      "output/${{ steps.setup.outputs.project-name }}-3D_top-without.png" \
+            --assembly_image "output/${{ steps.setup.outputs.project-name }}-3D_top-with.png" \
+            --stencil_image  "output/${{ steps.setup.outputs.project-name }}-stencil_top.png" \
+            --output_dir     "output/"
