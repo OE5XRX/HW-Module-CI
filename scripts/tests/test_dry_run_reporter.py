@@ -68,3 +68,20 @@ def test_print_report_exit_marker_when_failures():
     out = buf.getvalue()
     assert "EXIT: 1" in out
     assert "would-fail present" in out
+
+
+def test_record_rejects_unknown_action():
+    """A typo'd action should fail-fast at the call site, not KeyError later."""
+    import pytest
+    rep = DryRunReporter()
+    with pytest.raises(ValueError, match="must be one of"):
+        rep.record("CRAETE", "Parts", "X")  # typo of CREATE
+
+
+def test_print_report_empty_records():
+    """Empty reporter still produces a clean Summary + EXIT marker."""
+    buf = io.StringIO()
+    DryRunReporter().print_report(file=buf)
+    out = buf.getvalue()
+    assert "Summary: 0 CREATE, 0 REUSE, 0 SKIP, 0 would-fail" in out
+    assert "EXIT: 0" in out

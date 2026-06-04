@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import sys
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import IO, Literal
 
 Action = Literal["CREATE", "REUSE", "SKIP", "FAIL"]
+_VALID_ACTIONS = ("CREATE", "REUSE", "SKIP", "FAIL")
 
-# Field widths so categories' "Would ACTION:  target" lines align in the output.
-_ACTION_WIDTH = 7
+# Column width for "Would ACTION:" labels so the targets line up.
+# Computed from the longest label ("Would CREATE:") + 1 trailing space.
+_LABEL_WIDTH = len("Would CREATE:") + 1
 
 
 @dataclass
@@ -41,6 +43,16 @@ class DryRunReporter:
         target: str,
         detail: str = "",
     ) -> None:
+        # Fail-fast on a typo'd action: Literal is type-hint only, not runtime
+        # enforced. Without this, a misuse like reporter.record("CRAETE", ...)
+        # would silently accept the record and KeyError much later in
+        # print_report — a confusing end-of-run crash. Validate at the
+        # call site instead, where the typo is.
+        if action not in _VALID_ACTIONS:
+            raise ValueError(
+                f"DryRunReporter.record: action must be one of "
+                f"{_VALID_ACTIONS}, got {action!r}"
+            )
         self.records.append(DryRunRecord(action, category, target, detail))
 
     def has_failures(self) -> bool:
@@ -59,8 +71,8 @@ class DryRunReporter:
             print(f"{category}:", file=file)
             for rec in recs:
                 detail_suffix = f" — {rec.detail}" if rec.detail else ""
-                # action_str padded so "Would CREATE:" and "Would REUSE:" align.
-                action_padded = (f"Would {rec.action}:").ljust(_ACTION_WIDTH + 7)
+                # Pad so "Would CREATE:" and "Would REUSE:" align under targets.
+                action_padded = (f"Would {rec.action}:").ljust(_LABEL_WIDTH)
                 print(f"  {action_padded}{rec.target}{detail_suffix}", file=file)
             print(file=file)
 
