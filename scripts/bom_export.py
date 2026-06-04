@@ -80,32 +80,46 @@ def match_supplier_parts(api: InvenTreeAPI, entries: list[BomEntry]) -> None:
 
     Uses a batch ``SKU__in=[...]`` filter (one API call covering every SKU
     referenced by the BOM) instead of fetching the full SupplierPart table.
-    Falls back to per-SKU queries if the API version does not support the
-    ``__in`` lookup — still N queries instead of one full-table scan.
+
+    Falls back to per-SKU queries when:
+      - The batch call raises an exception, OR
+      - The batch call returns an empty list despite having SKUs to look
+        up.  The latter case defends against InvenTree versions that
+        respond to an unsupported ``__in`` filter with HTTP 400 (which
+        the InvenTree Python client silently converts to an empty list).
     """
+    # sorted for deterministic API call order — helpful for log diffing.
     all_skus = sorted({
         sku for entry in entries
         for sku in entry.lcsc + entry.mouser
         if sku
     })
-    if not all_skus:
-        sku_to_part: dict[str, Part] = {}
-    else:
+    supplier_parts: list[SupplierPart] = []
+    if all_skus:
         try:
-            supplier_parts = SupplierPart.list(api, SKU__in=all_skus)
+            supplier_parts = list(SupplierPart.list(api, SKU__in=all_skus))
         except Exception as exc:
             log.warning(
-                "SKU__in batch query failed (%s); falling back to per-SKU",
+                "SKU__in batch query raised (%s); will fall back to per-SKU",
                 exc)
-            supplier_parts = []
+
+        if not supplier_parts:
+            # Either filter unsupported (HTTP 400 swallowed by the client →
+            # empty list, indistinguishable from "no matches") or genuinely
+            # no SupplierParts on the server for any of these SKUs.  Probe
+            # per-SKU to disambiguate and recover.
+            log.info(
+                "Batch SKU lookup returned no results; falling back to "
+                "per-SKU queries for %d SKU(s)", len(all_skus))
             for sku in all_skus:
                 try:
                     supplier_parts.extend(SupplierPart.list(api, SKU=sku))
                 except Exception as exc2:
                     log.debug("per-SKU lookup failed for %s: %s", sku, exc2)
-        sku_to_part = {
-            sp.SKU: Part(api, pk=sp.part) for sp in supplier_parts
-        }
+
+    sku_to_part: dict[str, Part] = {
+        sp.SKU: Part(api, pk=sp.part) for sp in supplier_parts
+    }
 
     for entry in entries:
         if entry.inventree_part:
