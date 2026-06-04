@@ -77,6 +77,19 @@ def _track_company(c: Company) -> Company:
     return c
 
 
+_created_categories: list[PartCategory] = []
+
+
+def _ensure_category(api: InvenTreeAPI, name: str) -> PartCategory:
+    """Find-or-create a throwaway PartCategory, track for cleanup."""
+    existing = PartCategory.list(api, name=name)
+    if existing:
+        return existing[0]
+    cat = PartCategory.create(api, {"name": name, "description": "e2e test"})
+    _created_categories.append(cat)
+    return cat
+
+
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
@@ -110,6 +123,54 @@ def test_find_part_by_name_and_revision(api: InvenTreeAPI) -> None:
     print(f"  PASS  find_part_by_name_and_revision (name + revision)")
 
 
+def test_pcb_silently_reuse(api: InvenTreeAPI) -> None:
+    """create_pcb_part(): second call with same name+revision returns existing pk."""
+    from bom_export import create_pcb_part
+    name = f"{PREFIX} PCBReuse"
+    revision = "1.0"
+    cat = _ensure_category(api, f"{PREFIX} cat")
+
+    first = create_pcb_part(api, cat, name, revision, image=None)
+    _track(first)
+    second = create_pcb_part(api, cat, name, revision, image=None)
+
+    assert second.pk == first.pk, (
+        f"expected reuse of pk={first.pk}, got pk={second.pk}")
+    print(f"  PASS  PCB silently-reuse (both runs returned pk={first.pk})")
+
+
+def test_stencil_silently_reuse(api: InvenTreeAPI) -> None:
+    """create_stencil_part(): second call with same name+revision returns existing pk."""
+    from bom_export import create_stencil_part
+    name = f"{PREFIX} StencilReuse"
+    revision = "1.0"
+    cat = _ensure_category(api, f"{PREFIX} cat")
+
+    first = create_stencil_part(api, cat, name, revision, image=None)
+    _track(first)
+    second = create_stencil_part(api, cat, name, revision, image=None)
+
+    assert second.pk == first.pk, (
+        f"expected reuse of pk={first.pk}, got pk={second.pk}")
+    print(f"  PASS  Stencil silently-reuse (both runs returned pk={first.pk})")
+
+
+def test_assembly_silently_reuse(api: InvenTreeAPI) -> None:
+    """create_assembly_part(): second call with same name+revision returns existing pk."""
+    from bom_export import create_assembly_part
+    name = f"{PREFIX} AssemblyReuse"
+    revision = "1.0"
+    cat = _ensure_category(api, f"{PREFIX} cat")
+
+    first = create_assembly_part(api, cat, name, revision, image=None)
+    _track(first)
+    second = create_assembly_part(api, cat, name, revision, image=None)
+
+    assert second.pk == first.pk, (
+        f"expected reuse of pk={first.pk}, got pk={second.pk}")
+    print(f"  PASS  Assembly silently-reuse (both runs returned pk={first.pk})")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -127,7 +188,10 @@ def main() -> int:
     failed = 0
     try:
         for tc in (test_find_part_by_name_exact,
-                   test_find_part_by_name_and_revision):
+                   test_find_part_by_name_and_revision,
+                   test_pcb_silently_reuse,
+                   test_stencil_silently_reuse,
+                   test_assembly_silently_reuse):
             try:
                 tc(api)
             except AssertionError as e:
@@ -143,11 +207,14 @@ def main() -> int:
                   f"{len(_created_companies)} Companies for inspection.")
         else:
             print(f"\n→ Cleanup: {len(_created_parts)} Parts, "
-                  f"{len(_created_companies)} Companies ...")
+                  f"{len(_created_companies)} Companies, "
+                  f"{len(_created_categories)} Categories ...")
             for p in _created_parts:
                 _safe_delete(p)
             for c in _created_companies:
                 _safe_delete(c)
+            for cat in _created_categories:
+                _safe_delete(cat)
             print("  done.")
     if failed:
         print(f"\nFAIL: {failed} test(s) failed.", file=sys.stderr)

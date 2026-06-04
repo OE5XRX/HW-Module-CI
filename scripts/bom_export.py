@@ -23,6 +23,7 @@ from inventree.part import BomItem, Part, PartCategory, PartRelated
 
 from inventree_sync import BomEntry, ensure_parts_exist
 from inventree_sync.categories import load_category_map
+from inventree_sync.client import find_part_by_name_and_revision
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -103,28 +104,44 @@ def match_supplier_parts(api: InvenTreeAPI, entries: list[BomEntry]) -> None:
 # ---------------------------------------------------------------------------
 
 def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, version: str, image: str) -> Part:
+    full_name = f"{name} PCB"
+    existing = find_part_by_name_and_revision(api, full_name, version)
+    if existing is not None:
+        log.info("Reusing existing PCB part '%s' rev %s (pk=%s)",
+                 full_name, version, existing.pk)
+        return existing
+
     part = Part.create(api, {
         "category": category.pk,
-        "name": f"{name} PCB",
+        "name": full_name,
         "revision": version,
         "component": True,
     })
-    assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
-    log.info("Created PCB part '%s PCB' (pk=%s)", name, part.pk)
+    if image:
+        assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
+    log.info("Created PCB part '%s' rev %s (pk=%s)", full_name, version, part.pk)
     return part
 
 
 def create_assembly_part(api: InvenTreeAPI, category: PartCategory, name: str, version: str, image: str) -> Part:
+    full_name = f"{name} Module"
+    existing = find_part_by_name_and_revision(api, full_name, version)
+    if existing is not None:
+        log.info("Reusing existing assembly part '%s' rev %s (pk=%s)",
+                 full_name, version, existing.pk)
+        return existing
+
     part = Part.create(api, {
         "category": category.pk,
-        "name": f"{name} Module",
+        "name": full_name,
         "revision": version,
         "component": True,
         "assembly": True,
         "trackable": True,
     })
-    assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
-    log.info("Created assembly part '%s Module' (pk=%s)", name, part.pk)
+    if image:
+        assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
+    log.info("Created assembly part '%s' rev %s (pk=%s)", full_name, version, part.pk)
     return part
 
 
@@ -135,15 +152,22 @@ def create_stencil_part(
     version: str,
     image: str | None = None,
 ) -> Part:
+    full_name = f"{name} SMT Stencil"
+    existing = find_part_by_name_and_revision(api, full_name, version)
+    if existing is not None:
+        log.info("Reusing existing stencil part '%s' rev %s (pk=%s)",
+                 full_name, version, existing.pk)
+        return existing
+
     part = Part.create(api, {
         "category": category.pk,
-        "name": f"{name} SMT Stencil",
+        "name": full_name,
         "revision": version,
         "component": True,
     })
     if image:
         assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
-    log.info("Created stencil part '%s SMT Stencil' (pk=%s)", name, part.pk)
+    log.info("Created stencil part '%s' rev %s (pk=%s)", full_name, version, part.pk)
     return part
 
 
