@@ -16,6 +16,7 @@ import argparse
 import csv
 import logging
 import sys
+from typing import Optional
 
 from inventree.api import InvenTreeAPI
 from inventree.company import SupplierPart
@@ -25,6 +26,8 @@ from inventree_sync import BomEntry, ensure_parts_exist
 from inventree_sync.attachments import attach_kibot_outputs
 from inventree_sync.categories import load_category_map
 from inventree_sync.client import find_part_by_name_and_revision
+from inventree_sync.cost_report import generate_cost_report
+from inventree_sync.dry_run import DryRunReporter
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -84,7 +87,11 @@ def load_bom(csv_path: str) -> list[BomEntry]:
 # Part matching
 # ---------------------------------------------------------------------------
 
-def match_supplier_parts(api: InvenTreeAPI, entries: list[BomEntry]) -> None:
+def match_supplier_parts(
+    api: InvenTreeAPI,
+    entries: list[BomEntry],
+    reporter: Optional["DryRunReporter"] = None,
+) -> None:
     """
     Match each BomEntry to its InvenTree Part via SupplierPart SKU lookup.
     Populates entry.inventree_part for every entry that has a supplier SKU.
@@ -145,10 +152,32 @@ def match_supplier_parts(api: InvenTreeAPI, entries: list[BomEntry]) -> None:
 
     missing = [e for e in entries if not e.inventree_part and (e.lcsc or e.mouser)]
     if missing:
+        # Dry-run guard: ensure_parts_exist already recorded CREATE for new
+        # entries. Those have lcsc/mouser SKUs but `find_existing_part` missed
+        # (truly new) → not yet in InvenTree → here they'd fall through into
+        # `missing`. Don't double-report them as FAIL — they ARE the
+        # CREATE entries from the prior step.
+        already_creating: set[str] = set()
+        if reporter is not None:
+            already_creating = {
+                r.target for r in reporter.records
+                if r.category == "Parts" and r.action == "CREATE"
+            }
+
         for entry in missing:
-            log.error("No InvenTree part found for %s (LCSC=%s, Mouser=%s)",
-                      entry.reference, entry.lcsc, entry.mouser)
-        sys.exit(1)
+            if reporter is not None:
+                if entry.reference in already_creating:
+                    continue  # ensure_parts_exist already recorded this as CREATE
+                reporter.record(
+                    "FAIL", "Parts", entry.reference,
+                    f"no InvenTree match (LCSC={entry.lcsc}, Mouser={entry.mouser})",
+                )
+            else:
+                log.error("No InvenTree part found for %s (LCSC=%s, Mouser=%s)",
+                          entry.reference, entry.lcsc, entry.mouser)
+        if reporter is None:
+            sys.exit(1)
+        # In dry-run mode, the print_report+exit happens up in main().
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +335,11 @@ def parse_args() -> argparse.Namespace:
             "default_categories.yaml shipped with the package."
         ),
     )
+    parser.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Simulate the sync flow without InvenTree side-effects. "
+             "Prints a Would-CREATE/REUSE/SKIP/FAIL report; exit 1 on FAIL.",
+    )
     return parser.parse_args()
 
 
@@ -316,11 +350,74 @@ def main() -> None:
     #   INVENTREE_API_HOST  +  INVENTREE_API_TOKEN
     #   (or INVENTREE_API_USERNAME / INVENTREE_API_PASSWORD)
     api = InvenTreeAPI()
+    reporter = DryRunReporter() if args.dry_run else None
 
     entries = load_bom(args.csv_file)
 
     # Load category map (custom file or built-in default)
     category_map = load_category_map(args.categories)
+
+    if reporter is not None:
+        # Dry-run path: record decisions, skip side-effecting operations
+        # (Part.create / SupplierPart.create / BomItem.create / save / supplier
+        # fetch). Read-only InvenTree lookups (find_part_by_name_and_revision,
+        # BomItem.list, SupplierPart.list in match_supplier_parts) still run —
+        # they're how we know whether something WOULD be CREATE vs REUSE.
+        ensure_parts_exist(api, entries, category_map, reporter=reporter)
+        match_supplier_parts(api, entries, reporter=reporter)
+
+        pcb_existing      = find_part_by_name_and_revision(api, f"{args.name} PCB", args.version)
+        if pcb_existing is not None:
+            reporter.record("REUSE", "PCB", f"{args.name} PCB rev {args.version}",
+                            f"existing pk={pcb_existing.pk}")
+        else:
+            reporter.record("CREATE", "PCB", f"{args.name} PCB rev {args.version}")
+
+        assembly_existing = find_part_by_name_and_revision(api, f"{args.name} Module", args.version)
+        if assembly_existing is not None:
+            reporter.record("REUSE", "Assembly", f"{args.name} Module rev {args.version}",
+                            f"existing pk={assembly_existing.pk}")
+        else:
+            reporter.record("CREATE", "Assembly", f"{args.name} Module rev {args.version}")
+
+        stencil_existing  = find_part_by_name_and_revision(api, f"{args.name} SMT Stencil", args.version)
+        if stencil_existing is not None:
+            reporter.record("REUSE", "Stencil", f"{args.name} SMT Stencil rev {args.version}",
+                            f"existing pk={stencil_existing.pk}")
+        else:
+            reporter.record("CREATE", "Stencil", f"{args.name} SMT Stencil rev {args.version}")
+
+        # BomItem decisions: count from the reporter's own Parts records.
+        # entry.inventree_part can't be relied on here because the dry-run
+        # branches in ensure_parts_exist `continue` before appending — they
+        # only record decisions. Use the reporter's Parts CREATE+REUSE count
+        # as the closest proxy for "entries that would yield a BomItem".
+        parts_resolved = sum(
+            1 for r in reporter.records
+            if r.category == "Parts" and r.action in ("CREATE", "REUSE")
+        )
+        if assembly_existing is None:
+            reporter.record(
+                "CREATE", "BomItem",
+                f"{parts_resolved + 1} items (PCB + resolved entries)",
+            )
+        else:
+            # Existing assembly: would create or skip depending on overlap
+            # with existing BomItems. We can't predict the exact split
+            # without simulating populate_bom against the real Part PKs
+            # (which we don't have for the CREATE-branch parts in dry-run).
+            reporter.record(
+                "CREATE", "BomItem",
+                f"up to {parts_resolved + 1} items (PCB + resolved entries)",
+                "exact create/skip split known only at sync time",
+            )
+
+        reporter.print_report(title=f"bom_export {args.name} v{args.version}")
+        if reporter.has_failures():
+            sys.exit(1)
+        return  # End of dry-run path
+
+    # Non-dry-run path: original flow continues below (UNCHANGED)
 
     # Create any parts that don't exist in InvenTree yet
     ensure_parts_exist(api, entries, category_map)
@@ -342,6 +439,12 @@ def main() -> None:
     log.info("Linked stencil to PCB as related part")
 
     populate_bom(api, assembly, pcb, entries)
+
+    # Cost-report (Backlog #11) — Markdown into $GITHUB_STEP_SUMMARY + assembly.notes
+    try:
+        generate_cost_report(api, assembly, entries)
+    except Exception as exc:
+        log.warning("Cost-report generation failed: %s", exc)
 
     if args.output_dir:
         attach_kibot_outputs(api, pcb, assembly, stencil, args.output_dir)

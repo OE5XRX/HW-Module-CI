@@ -403,6 +403,191 @@ def test_attachment_idempotent(api: InvenTreeAPI) -> None:
         print(f"  PASS  attachment idempotent (total={total_1}, second run no-op)")
 
 
+def test_cost_report_generation(api: InvenTreeAPI) -> None:
+    """generate_cost_report() produces Markdown + patches assembly.notes."""
+    from inventree.company import Company, SupplierPart, SupplierPriceBreak
+    from bom_export import create_assembly_part, create_pcb_part
+    from inventree_sync.cost_report import generate_cost_report
+    from inventree_sync.models import BomEntry
+    cat = _ensure_category(api, f"{PREFIX} cat")
+
+    # Test infrastructure: one Company, one Part with price breaks, one BomEntry.
+    supplier = _track_company(Company.create(api, {
+        "name": f"{PREFIX} TestSupplierForCost", "is_supplier": True,
+    }))
+    component = _track(Part.create(api, {
+        "name": f"{PREFIX} CostComp", "description": "comp", "active": True,
+        "component": True, "purchaseable": True,
+    }))
+    sp = SupplierPart.create(api, {
+        "part": component.pk, "supplier": supplier.pk,
+        "SKU": f"{PREFIX}-SKU-1",
+    })
+    SupplierPriceBreak.create(api, {
+        "part": sp.pk, "quantity": 1, "price": "0.5", "price_currency": "EUR",
+    })
+    SupplierPriceBreak.create(api, {
+        "part": sp.pk, "quantity": 100, "price": "0.2", "price_currency": "EUR",
+    })
+
+    assembly = _track(create_assembly_part(api, cat, f"{PREFIX} CostTest", "1.0", image=None))
+    pcb = _track(create_pcb_part(api, cat, f"{PREFIX} CostTest", "1.0", image=None))
+
+    entry = BomEntry(
+        reference="U1", qty=2,
+        kicad_part="X", kicad_value="CostTest", kicad_footprint="dummy",
+    )
+    entry.inventree_part = [component]
+
+    md = generate_cost_report(api, assembly, [entry], tiers=(1, 10, 100))
+
+    # Sanity: markdown contains expected pieces.
+    assert "## BOM Cost Report" in md, f"missing header in:\n{md}"
+    assert "| 1 |" in md and "| 10 |" in md and "| 100 |" in md, (
+        f"missing tier rows in:\n{md}")
+    # Tier 1: 2 units * 1 board = 2 needed. Best valid break is qty>=1 at 0.5.
+    # Total = 2 * 0.5 = 1.00, per-board = 1.00.
+    assert "€1.00" in md, f"expected tier-1 total €1.00 in:\n{md}"
+    # Tier 100: 2 units * 100 boards = 200 needed. Best valid break is qty>=100 at 0.2.
+    # Total = 200 * 0.2 = 40.00, per-board = 0.40.
+    assert "€40.00" in md, f"expected tier-100 total €40.00 in:\n{md}"
+    # Supplier name must surface in the Sources column. If supplier_detail
+    # ever stops being included in the SupplierPart.list response, this
+    # assertion catches it (without it, every supplier renders as "?").
+    assert "TestSupplierForCost" in md, (
+        f"supplier name missing from Sources column in:\n{md}")
+
+    # Re-fetch the assembly to verify notes were patched.
+    refreshed = Part(api, pk=assembly.pk)
+    notes = getattr(refreshed, "notes", None) or refreshed._data.get("notes") or ""
+    assert "BOM Cost Report" in notes, f"assembly.notes not patched, got: {notes!r}"
+    print(f"  PASS  cost-report generation (markdown len={len(md)}, notes patched)")
+
+
+def test_refresh_idempotent(api: InvenTreeAPI) -> None:
+    """inventree_refresh: idempotent + a no-op on a Part it already refreshed."""
+    import subprocess
+    # Create a throwaway Part with a real LCSC SKU so the refresh has work
+    # to do. C17414 = Uniroyal 10kΩ 0805 (used elsewhere in our PR-1 probes).
+    cat = _ensure_category(api, f"{PREFIX} cat")
+    # Always create a cleanup-safe LCSC supplier. Name must contain "lcsc"
+    # (case-insensitive) for collect_parts_to_refresh to discover it.
+    # Suffix "Refresh" to avoid collision with the LCSC company already
+    # created by test_supplier_link_populated (server enforces
+    # unique (name, email) on Company).
+    lcsc_supplier = _track_company(Company.create(api, {
+        "name": f"{PREFIX} LCSC Refresh", "is_supplier": True,
+    }))
+
+    target = _track(Part.create(api, {
+        "name": f"{PREFIX} RefreshTest",
+        "description": "",  # empty so refresh will populate it
+        "active": True, "component": True, "purchaseable": True,
+    }))
+    SupplierPart.create(api, {
+        "part": target.pk, "supplier": lcsc_supplier.pk, "SKU": "C17414",
+    })
+
+    # MouserFetcher.__init__ requires MOUSER_API_KEY even when no Mouser
+    # SKUs exist. Test uses only LCSC, so a dummy key is fine — Mouser API
+    # is never called for the test Part.
+    sub_env = {**os.environ}
+    sub_env.setdefault("MOUSER_API_KEY", "dummy-for-e2e-test")
+
+    # First run: should populate fields
+    proc1 = subprocess.run(
+        [sys.executable, "scripts/inventree_refresh.py"],
+        env=sub_env, capture_output=True, text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert "Refresh complete:" in proc1.stderr or "Refresh complete:" in proc1.stdout, (
+        f"refresh did not finish cleanly:\nSTDOUT:\n{proc1.stdout}\nSTDERR:\n{proc1.stderr}")
+
+    # Second run: should also complete without crashing (idempotent).
+    proc2 = subprocess.run(
+        [sys.executable, "scripts/inventree_refresh.py"],
+        env=sub_env, capture_output=True, text=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert proc2.returncode == 0, (
+        f"second refresh exit={proc2.returncode}:\n"
+        f"STDOUT:\n{proc2.stdout}\nSTDERR:\n{proc2.stderr}")
+    print("  PASS  refresh idempotent (2 runs, exit 0, no crash)")
+
+
+def test_dry_run_no_side_effects(api: InvenTreeAPI) -> None:
+    """bom_export.py --dry-run produces stdout output, creates no Parts."""
+    import subprocess
+    import tempfile
+
+    # Mix SKIP (no SKU) and CREATE (synthetic LCSC SKU that won't resolve).
+    # The CREATE row is critical: it locks the CREATE→FAIL no-double-report
+    # contract (a brand-new SKU triggers CREATE in ensure_parts_exist; without
+    # the guard in match_supplier_parts it would also FAIL → CI false negative
+    # on every new part).
+    synthetic_sku = f"DRYRUN-{PREFIX}-NEW"
+    csv_content = (
+        '"References","Quantity Per PCB","Part","Value","Footprint","LCSC","MOUSER"\n'
+        '"R1","1","R","10k","R_0805_2012Metric","",""\n'  # no SKU → SKIP
+        f'"R2","1","R","10k","R_0805_2012Metric","{synthetic_sku}",""\n'  # new SKU → CREATE
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as tmp:
+        tmp.write(csv_content)
+        csv_path = tmp.name
+
+    try:
+        # Baseline part count before dry-run
+        before = len(Part.list(api))
+
+        proc = subprocess.run(
+            [
+                sys.executable, "scripts/bom_export.py",
+                "--csv_file", csv_path,
+                "--name", f"{PREFIX}DryRunTest",
+                "--version", "1.0",
+                "--pcb_image", "doc/Icon.png",
+                "--assembly_image", "doc/Icon.png",
+                "--dry-run",
+            ],
+            env={**os.environ},
+            capture_output=True, text=True,
+            cwd=str(Path(__file__).resolve().parents[1]),
+        )
+
+        out = proc.stdout
+        assert "DRY-RUN:" in out, f"missing DRY-RUN marker in stdout:\n{out}\nSTDERR:\n{proc.stderr}"
+        assert "Would SKIP:" in out, f"expected Would SKIP line for R1:\n{out}"
+        assert "Would CREATE:" in out, f"expected Would CREATE line for R2:\n{out}"
+        assert "Summary:" in out, f"missing Summary line:\n{out}"
+        # CRITICAL: R2 went through ensure_parts_exist as CREATE; it must NOT
+        # also appear as FAIL even though its SKU has no SupplierPart yet.
+        # Per-line check (action labels are padded — "Would FAIL:" + ljust
+        # would produce 3 spaces before the target, but the padding is an
+        # implementation detail we don't want to lock in the assertion).
+        fail_lines_for_r2 = [
+            ln for ln in out.splitlines()
+            if "Would FAIL" in ln and "R2" in ln
+        ]
+        assert not fail_lines_for_r2, (
+            f"dry-run double-reported R2 as CREATE+FAIL (bug from review): "
+            f"{fail_lines_for_r2}\nfull output:\n{out}")
+        # Net exit-code should be 0 because the only "miss" is a CREATE record.
+        assert proc.returncode == 0, (
+            f"dry-run exited {proc.returncode} on a CREATE-only BOM "
+            f"(expected 0):\nSTDOUT:\n{out}\nSTDERR:\n{proc.stderr}")
+
+        after = len(Part.list(api))
+        assert before == after, (
+            f"dry-run created {after - before} parts on the server (expected 0)")
+        print(f"  PASS  dry-run no side-effects (stdout {len(out)}B, parts unchanged)")
+    finally:
+        # Clean up the tempfile to avoid /tmp leaks on repeated runs.
+        try:
+            os.unlink(csv_path)
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -428,7 +613,10 @@ def main() -> int:
                    test_multi_sku_supplier_parts,
                    test_parameter_sync_delta,
                    test_supplier_link_populated,
-                   test_attachment_idempotent):
+                   test_attachment_idempotent,
+                   test_cost_report_generation,
+                   test_dry_run_no_side_effects,
+                   test_refresh_idempotent):
             try:
                 tc(api)
             except AssertionError as e:
