@@ -243,7 +243,33 @@ class MouserFetcher:
             category_path=category_path,
             price_breaks=price_breaks,
             currency=currency,
+            parameters=self._parse_attributes(p),
         )
+
+    @staticmethod
+    def _parse_attributes(product: dict) -> dict[str, str]:
+        """Extract parameters from Mouser ProductAttributes list.
+
+        Mouser API v2 returns attributes as a list of {"AttributeName": str,
+        "AttributeValue": str} pairs.  We strip both sides and skip empty
+        rows.  If a name appears multiple times, the last value wins
+        (Mouser does emit duplicates occasionally for unit-aware fields).
+        Non-string values are coerced via ``str()`` because Mouser occasionally
+        returns numeric values for numeric-only specs (e.g. ``-40`` for an
+        operating-temperature minimum).  None values are skipped.
+        """
+        params: dict[str, str] = {}
+        for attr in product.get("ProductAttributes") or []:
+            name_raw = attr.get("AttributeName")
+            value_raw = attr.get("AttributeValue")
+            if name_raw is None or value_raw is None:
+                continue
+            name = str(name_raw).strip()
+            value = str(value_raw).strip()
+            if not name or not value:
+                continue
+            params[name] = value
+        return params
 
     @staticmethod
     def _parse_price(price_str: str) -> float:

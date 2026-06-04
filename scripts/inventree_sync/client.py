@@ -13,6 +13,7 @@ import requests
 
 from inventree.api import InvenTreeAPI
 from inventree.company import Company, ManufacturerPart, SupplierPart, SupplierPriceBreak
+from inventree.base import Parameter, ParameterTemplate
 from inventree.part import Part, PartCategory
 
 from .models import PartData
@@ -293,6 +294,7 @@ def create_part_in_inventree(
                     "supplier": lcsc_supplier.pk,
                     "SKU": sku,
                     "manufacturer_part": None,
+                    "link": _supplier_url(lcsc_supplier.name, sku),
                 })
                 if part_data.price_breaks:
                     _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
@@ -311,11 +313,16 @@ def create_part_in_inventree(
                     "part": part.pk,
                     "supplier": mouser_supplier.pk,
                     "SKU": sku,
+                    "link": _supplier_url(mouser_supplier.name, sku),
                 })
                 if attach_mouser_prices:
                     _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
             except Exception as exc:
                 logger.warning("Mouser SupplierPart creation failed (%s): %s", sku, exc)
+
+    # 6. Parameters (LCSC + Mouser merged in part_data.parameters)
+    if part_data.parameters:
+        upload_parameters(api, part, part_data.parameters)
 
     return part
 
@@ -396,6 +403,130 @@ def find_part_by_name_and_revision(
     return None
 
 
+# Process-lifetime cache: template names → ParameterTemplate.  A typical
+# BOM sync hits the same template names (Resistance, Tolerance, Package, …)
+# hundreds of times across Parts. On servers that ignore the `name=` filter
+# (see find_part_by_name docstring) every lookup is a full-table scan, so
+# caching the resolved templates avoids many redundant network round-trips.
+_parameter_template_cache: dict[str, ParameterTemplate] = {}
+
+
+def _find_or_create_parameter_template(
+    api: InvenTreeAPI, name: str
+) -> Optional[ParameterTemplate]:
+    """Find ParameterTemplate by exact name, create if missing.
+
+    Idempotent: same defensive post-filter pattern as `find_part_by_name`
+    because this InvenTree server version silently ignores ``name=``.
+
+    Uses the generic ``parameter/template/`` endpoint (API >= 429) which
+    replaced the legacy part-scoped ``part/parameter/template/`` endpoint.
+    Ref: https://github.com/inventree/InvenTree/pull/10699
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    cached = _parameter_template_cache.get(name)
+    if cached is not None:
+        return cached
+    try:
+        candidates = [
+            t for t in ParameterTemplate.list(api, name=name)
+            if t.name == name
+        ]
+        if candidates:
+            template = candidates[0]
+        else:
+            template = ParameterTemplate.create(api, {"name": name})
+    except Exception as exc:
+        logger.warning(
+            "ParameterTemplate find-or-create failed for %r: %s", name, exc)
+        return None
+    _parameter_template_cache[name] = template
+    return template
+
+
+def _supplier_url(supplier_name: str, sku: str) -> str:
+    """Construct a stable product-page URL from supplier name + SKU.
+
+    Pattern-based (not API-based) so this is robust against supplier-
+    API schema changes.  Unknown suppliers return "" — caller passes
+    that to ``SupplierPart.link`` unchanged, leaving the field empty.
+    """
+    name = (supplier_name or "").lower()
+    sku = (sku or "").strip()
+    if not sku:
+        return ""
+    if "lcsc" in name:
+        return f"https://www.lcsc.com/product-detail/{sku}.html"
+    if "mouser" in name:
+        return f"https://www.mouser.com/ProductDetail/{sku}"
+    return ""
+
+
+def upload_parameters(
+    api: InvenTreeAPI, part: Part, params: dict[str, str]
+) -> None:
+    """Delta-sync a parameter dict to an InvenTree Part.
+
+    Behavior per PR-3 spec:
+      - For each (name, value) in *params*: find/create the
+        ParameterTemplate and create-or-update the Parameter on *part*.
+      - Keys NOT present in *params* are left untouched on *part*
+        (delta-sync, not full replacement).
+      - Supplier is source of truth for keys IN *params* — any manual
+        UI edit to those keys is overwritten.
+
+    Uses the generic ``parameter/`` endpoint (API >= 429) which replaced
+    the legacy part-scoped ``part/parameter/`` endpoint.  Association to
+    the Part is via ``model_type='part' + model_id=part.pk``.
+    Ref: https://github.com/inventree/InvenTree/pull/10699
+
+    Errors per parameter are logged and skipped so a single bad template
+    can't break the whole sync.
+    """
+    if not params:
+        return
+    model_type = part.getModelType()
+    for raw_name, raw_value in params.items():
+        # Normalize both: strip name and value, skip if either ends up
+        # empty (supplier APIs occasionally return padded or blank
+        # strings).  Keeps Parameter.data and template names consistent.
+        name = (raw_name or "").strip()
+        value = "" if raw_value is None else str(raw_value).strip()
+        if not name or not value:
+            continue
+        template = _find_or_create_parameter_template(api, name)
+        if template is None:
+            continue
+        try:
+            existing = Parameter.list(
+                api,
+                model_type=model_type,
+                model_id=part.pk,
+                template=template.pk,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Parameter lookup failed for part=%s template=%s: %s",
+                part.pk, template.pk, exc)
+            continue
+        try:
+            if existing:
+                existing[0].save({"data": value})
+            else:
+                Parameter.create(api, {
+                    "model_type": model_type,
+                    "model_id": part.pk,
+                    "template": template.pk,
+                    "data": value,
+                })
+        except Exception as exc:
+            logger.warning(
+                "Parameter save/create failed for part=%s template=%r: %s",
+                part.pk, name, exc)
+
+
 def ensure_supplier_parts(
     api: InvenTreeAPI,
     part: Part,
@@ -434,6 +565,7 @@ def ensure_supplier_parts(
                     "part": part.pk,
                     "supplier": lcsc_supplier.pk,
                     "SKU": sku,
+                    "link": _supplier_url(lcsc_supplier.name, sku),
                 })
                 existing_skus.add(sku)
                 if part_data.price_breaks:
@@ -453,9 +585,14 @@ def ensure_supplier_parts(
                     "part": part.pk,
                     "supplier": mouser_supplier.pk,
                     "SKU": sku,
+                    "link": _supplier_url(mouser_supplier.name, sku),
                 })
                 existing_skus.add(sku)
                 if attach_mouser_prices:
                     _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
             except Exception as exc:
                 logger.warning("Could not add Mouser supplier part %s: %s", sku, exc)
+
+    # Sync parameters on re-sync too — keeps existing Parts current.
+    if part_data.parameters:
+        upload_parameters(api, part, part_data.parameters)

@@ -40,10 +40,10 @@ jobs:
           python3 -m pip install --dry-run -r scripts/requirements.txt
           python3 -m pip install --dry-run -r scripts/requirements-dev.txt
 
-      - name: Install dev deps and run unit tests
+      - name: Install runtime + dev deps and run unit tests
         run: |
           set -euo pipefail
-          python3 -m pip install -r scripts/requirements-dev.txt
+          python3 -m pip install -r scripts/requirements.txt -r scripts/requirements-dev.txt
           python3 -m pytest scripts/tests/ -v
 
       - name: YAML syntax (all configs)

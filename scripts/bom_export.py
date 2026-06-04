@@ -22,6 +22,7 @@ from inventree.company import SupplierPart
 from inventree.part import BomItem, Part, PartCategory, PartRelated
 
 from inventree_sync import BomEntry, ensure_parts_exist
+from inventree_sync.attachments import attach_kibot_outputs
 from inventree_sync.categories import load_category_map
 from inventree_sync.client import find_part_by_name_and_revision
 
@@ -286,6 +287,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--assembly_image",  required=True,  help="Assembly render image")
     parser.add_argument("--stencil_image",   required=False, help="Stencil paste-layer render (optional)")
     parser.add_argument(
+        "--output_dir",
+        required=False,
+        help=(
+            "KiBot output directory.  When given, fabrication artifacts "
+            "(STEP, 3D renders, schematic PDF, BOM HTML/CSV, iBOM, "
+            "stencil files, JLCPCB-stencil ZIP) are auto-discovered and "
+            "attached to the respective Parts.  Omit to skip attachments."
+        ),
+    )
+    parser.add_argument(
         "--categories",
         required=False,
         metavar="YAML_FILE",
@@ -331,6 +342,9 @@ def main() -> None:
     log.info("Linked stencil to PCB as related part")
 
     populate_bom(api, assembly, pcb, entries)
+
+    if args.output_dir:
+        attach_kibot_outputs(api, pcb, assembly, stencil, args.output_dir)
 
 
 if __name__ == "__main__":

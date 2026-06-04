@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from inventree.api import InvenTreeAPI
 from inventree.company import Company, SupplierPart
+from inventree.base import Parameter, ParameterTemplate
 from inventree.part import BomItem, Part, PartCategory
 
 from inventree_sync.client import (
@@ -90,6 +91,25 @@ def _ensure_category(api: InvenTreeAPI, name: str) -> PartCategory:
     cat = PartCategory.create(api, {"name": name, "description": "e2e test"})
     _created_categories.append(cat)
     return cat
+
+
+def _params_by_name(api: InvenTreeAPI, part: Part) -> dict[str, str]:
+    """Return {template_name: data} for all Parameters on *part*.
+
+    Uses the generic ``parameter/`` endpoint (API >= 429) — see
+    upload_parameters() in client.py for the rationale.
+    """
+    params = Parameter.list(
+        api, model_type=part.getModelType(), model_id=part.pk
+    )
+    out: dict[str, str] = {}
+    for p in params:
+        try:
+            tpl = ParameterTemplate(api, pk=int(p.template))
+            out[tpl.name] = p.data
+        except Exception:
+            out[f"<pk={p.template}>"] = p.data
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +270,139 @@ def test_multi_sku_supplier_parts(api: InvenTreeAPI) -> None:
     print(f"  PASS  Multi-SKU SupplierParts ({skus})")
 
 
+def test_parameter_sync_delta(api: InvenTreeAPI) -> None:
+    """upload_parameters() delta-sync: overwrite present keys, leave others alone."""
+    from inventree_sync.client import upload_parameters
+
+    part = _track(Part.create(api, {
+        "name": f"{PREFIX} ParamPart",
+        "description": "param sync test",
+        "active": True,
+        "component": True,
+    }))
+
+    # First sync: A=1, B=2
+    upload_parameters(api, part, {"Resistance": "10kΩ", "Tolerance": "1%"})
+    snapshot1 = _params_by_name(api, part)
+    assert snapshot1 == {"Resistance": "10kΩ", "Tolerance": "1%"}, snapshot1
+
+    # Second sync: A overwritten, B not mentioned (must stay), C added.
+    upload_parameters(api, part, {"Resistance": "11kΩ", "Voltage": "50V"})
+    snapshot2 = _params_by_name(api, part)
+    assert snapshot2 == {
+        "Resistance": "11kΩ",   # overwritten
+        "Tolerance": "1%",      # unchanged (delta semantics)
+        "Voltage": "50V",        # new
+    }, snapshot2
+
+    print(f"  PASS  parameter sync delta ({snapshot2!r})")
+
+
+def test_supplier_link_populated(api: InvenTreeAPI) -> None:
+    """create_part_in_inventree(): SupplierPart.link is populated for LCSC + Mouser."""
+    from inventree_sync.client import create_part_in_inventree
+    from inventree_sync.models import PartData
+
+    lcsc = _track_company(Company.create(api, {
+        "name": f"{PREFIX} LCSC", "is_supplier": True,
+    }))
+    mouser = _track_company(Company.create(api, {
+        "name": f"{PREFIX} Mouser", "is_supplier": True,
+    }))
+
+    lcsc_sku = f"{PREFIX}-LCSC-LNK"
+    mouser_sku = f"{PREFIX}-MOU-LNK"
+
+    pdata = PartData(
+        mpn=f"{PREFIX}-MPN-LNK",
+        manufacturer=f"{PREFIX} Mfr-LNK",
+        description="link test",
+        lcsc_sku=lcsc_sku,
+        mouser_sku=mouser_sku,
+    )
+    part = create_part_in_inventree(
+        api,
+        name=f"{PREFIX} LinkPart",
+        part_data=pdata,
+        category=None,
+        lcsc_supplier=lcsc,
+        mouser_supplier=mouser,
+        lcsc_skus=[lcsc_sku],
+        mouser_skus=[mouser_sku],
+    )
+    assert part is not None
+    _track(part)
+
+    sps = SupplierPart.list(api, part=part.pk)
+    by_sku = {sp.SKU: sp for sp in sps}
+    assert lcsc_sku in by_sku, f"LCSC SupplierPart missing; got {list(by_sku)}"
+    assert mouser_sku in by_sku, f"Mouser SupplierPart missing; got {list(by_sku)}"
+
+    lcsc_expected = f"https://www.lcsc.com/product-detail/{lcsc_sku}.html"
+    mouser_expected = f"https://www.mouser.com/ProductDetail/{mouser_sku}"
+    assert by_sku[lcsc_sku].link == lcsc_expected, (
+        f"LCSC link {by_sku[lcsc_sku].link!r} != {lcsc_expected!r}")
+    assert by_sku[mouser_sku].link == mouser_expected, (
+        f"Mouser link {by_sku[mouser_sku].link!r} != {mouser_expected!r}")
+    print(f"  PASS  supplier link populated (LCSC + Mouser)")
+
+
+def test_attachment_idempotent(api: InvenTreeAPI) -> None:
+    """attach_kibot_outputs(): idempotent — second call adds nothing."""
+    import tempfile
+    from bom_export import create_assembly_part, create_pcb_part, create_stencil_part
+    from inventree_sync.attachments import attach_kibot_outputs
+
+    cat = _ensure_category(api, f"{PREFIX} cat")
+    pcb = _track(create_pcb_part(api, cat, f"{PREFIX} AttachTest", "1.0", image=None))
+    assembly = _track(create_assembly_part(api, cat, f"{PREFIX} AttachTest", "1.0", image=None))
+    stencil = _track(create_stencil_part(api, cat, f"{PREFIX} AttachTest", "1.0", image=None))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        proj = f"{PREFIX}-Attach"
+        # Files matching the mapping patterns:
+        (out / f"{proj}.step").write_text("dummy STEP")              # → PCB
+        (out / f"{proj}-3D_top.png").write_bytes(b"PNGbytes" * 30)    # → PCB
+        (out / f"{proj}-3D_bottom.png").write_bytes(b"PNGbytes" * 30) # → PCB
+        (out / f"{proj}-stencil_top.svg").write_text("dummy SVG")     # → Stencil
+        (out / "Fabrication").mkdir()
+        (out / "Fabrication" / f"{proj}-stencil.zip").write_bytes(b"ZIPbytes" * 30)  # → Stencil
+        (out / f"{proj}-schematic.pdf").write_text("dummy PDF")       # → Assembly
+        (out / f"{proj}-bom.html").write_text("dummy BOM HTML")        # → Assembly
+        (out / f"{proj}-bom.csv").write_text("dummy BOM CSV")          # → Assembly
+        (out / f"{proj}-ibom.html").write_text("dummy IBOM")           # → Assembly
+        # Skipped files (already Part.image):
+        (out / f"{proj}-3D_top-with.png").write_bytes(b"skip")
+        (out / f"{proj}-3D_top-without.png").write_bytes(b"skip")
+        (out / f"{proj}-stencil_top.png").write_bytes(b"skip")
+
+        # First call: should land everything except the 3 skipped images.
+        attach_kibot_outputs(api, pcb, assembly, stencil, out)
+        n_pcb_1 = len(pcb.getAttachments())
+        n_assembly_1 = len(assembly.getAttachments())
+        n_stencil_1 = len(stencil.getAttachments())
+        total_1 = n_pcb_1 + n_assembly_1 + n_stencil_1
+        # Expected attached:
+        #   PCB: .step + 3D_top + 3D_bottom = 3
+        #   Assembly: schematic + bom.html + bom.csv + ibom.html = 4
+        #   Stencil: stencil_top.svg + Fabrication/stencil.zip = 2
+        # Total = 9. Skipped: 3 image files. No double-attach.
+        assert total_1 == 9, (
+            f"expected 9 attachments after first call, got {total_1} "
+            f"(pcb={n_pcb_1}, assembly={n_assembly_1}, stencil={n_stencil_1})")
+
+        # Second call: idempotent — no new uploads.
+        attach_kibot_outputs(api, pcb, assembly, stencil, out)
+        n_pcb_2 = len(pcb.getAttachments())
+        n_assembly_2 = len(assembly.getAttachments())
+        n_stencil_2 = len(stencil.getAttachments())
+        total_2 = n_pcb_2 + n_assembly_2 + n_stencil_2
+        assert total_2 == total_1, (
+            f"not idempotent: first total={total_1}, second total={total_2}")
+        print(f"  PASS  attachment idempotent (total={total_1}, second run no-op)")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -272,7 +425,10 @@ def main() -> int:
                    test_stencil_silently_reuse,
                    test_assembly_silently_reuse,
                    test_bom_idempotent,
-                   test_multi_sku_supplier_parts):
+                   test_multi_sku_supplier_parts,
+                   test_parameter_sync_delta,
+                   test_supplier_link_populated,
+                   test_attachment_idempotent):
             try:
                 tc(api)
             except AssertionError as e:
