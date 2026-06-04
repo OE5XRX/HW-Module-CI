@@ -1,6 +1,12 @@
 """Pytest unit tests for MouserFetcher._parse_attributes — no network access."""
+from __future__ import annotations
 
-from inventree_sync.fetchers import MouserFetcher
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from inventree_sync.fetchers import MouserFetcher  # noqa: E402
 
 
 def test_parse_attributes_basic():
