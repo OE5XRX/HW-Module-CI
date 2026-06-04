@@ -13,6 +13,7 @@ import requests
 
 from inventree.api import InvenTreeAPI
 from inventree.company import Company, ManufacturerPart, SupplierPart, SupplierPriceBreak
+from inventree.base import Parameter, ParameterTemplate
 from inventree.part import Part, PartCategory
 
 from .models import PartData
@@ -394,6 +395,92 @@ def find_part_by_name_and_revision(
         if part.name == name and getattr(part, "revision", None) == revision:
             return part
     return None
+
+
+def _find_or_create_parameter_template(
+    api: InvenTreeAPI, name: str
+) -> Optional[ParameterTemplate]:
+    """Find ParameterTemplate by exact name, create if missing.
+
+    Idempotent: same defensive post-filter pattern as `find_part_by_name`
+    because this InvenTree server version silently ignores ``name=``.
+
+    Uses the generic ``parameter/template/`` endpoint (API >= 429) which
+    replaced the legacy part-scoped ``part/parameter/template/`` endpoint.
+    Ref: https://github.com/inventree/InvenTree/pull/10699
+    """
+    if not name:
+        return None
+    try:
+        candidates = [
+            t for t in ParameterTemplate.list(api, name=name)
+            if t.name == name
+        ]
+        if candidates:
+            return candidates[0]
+        return ParameterTemplate.create(api, {"name": name})
+    except Exception as exc:
+        logger.warning(
+            "ParameterTemplate find-or-create failed for %r: %s", name, exc)
+        return None
+
+
+def upload_parameters(
+    api: InvenTreeAPI, part: Part, params: dict[str, str]
+) -> None:
+    """Delta-sync a parameter dict to an InvenTree Part.
+
+    Behavior per PR-3 spec:
+      - For each (name, value) in *params*: find/create the
+        ParameterTemplate and create-or-update the Parameter on *part*.
+      - Keys NOT present in *params* are left untouched on *part*
+        (delta-sync, not full replacement).
+      - Supplier is source of truth for keys IN *params* — any manual
+        UI edit to those keys is overwritten.
+
+    Uses the generic ``parameter/`` endpoint (API >= 429) which replaced
+    the legacy part-scoped ``part/parameter/`` endpoint.  Association to
+    the Part is via ``model_type='part' + model_id=part.pk``.
+    Ref: https://github.com/inventree/InvenTree/pull/10699
+
+    Errors per parameter are logged and skipped so a single bad template
+    can't break the whole sync.
+    """
+    if not params:
+        return
+    model_type = part.getModelType()
+    for name, value in params.items():
+        if not name or value is None or value == "":
+            continue
+        template = _find_or_create_parameter_template(api, name)
+        if template is None:
+            continue
+        try:
+            existing = Parameter.list(
+                api,
+                model_type=model_type,
+                model_id=part.pk,
+                template=template.pk,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Parameter lookup failed for part=%s template=%s: %s",
+                part.pk, template.pk, exc)
+            continue
+        try:
+            if existing:
+                existing[0].save({"data": value})
+            else:
+                Parameter.create(api, {
+                    "model_type": model_type,
+                    "model_id": part.pk,
+                    "template": template.pk,
+                    "data": value,
+                })
+        except Exception as exc:
+            logger.warning(
+                "Parameter save/create failed for part=%s template=%r: %s",
+                part.pk, name, exc)
 
 
 def ensure_supplier_parts(

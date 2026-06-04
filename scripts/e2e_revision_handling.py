@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from inventree.api import InvenTreeAPI
 from inventree.company import Company, SupplierPart
+from inventree.base import Parameter, ParameterTemplate
 from inventree.part import BomItem, Part, PartCategory
 
 from inventree_sync.client import (
@@ -90,6 +91,25 @@ def _ensure_category(api: InvenTreeAPI, name: str) -> PartCategory:
     cat = PartCategory.create(api, {"name": name, "description": "e2e test"})
     _created_categories.append(cat)
     return cat
+
+
+def _params_by_name(api: InvenTreeAPI, part: Part) -> dict[str, str]:
+    """Return {template_name: data} for all Parameters on *part*.
+
+    Uses the generic ``parameter/`` endpoint (API >= 429) — see
+    upload_parameters() in client.py for the rationale.
+    """
+    params = Parameter.list(
+        api, model_type=part.getModelType(), model_id=part.pk
+    )
+    out: dict[str, str] = {}
+    for p in params:
+        try:
+            tpl = ParameterTemplate(api, pk=int(p.template))
+            out[tpl.name] = p.data
+        except Exception:
+            out[f"<pk={p.template}>"] = p.data
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +270,34 @@ def test_multi_sku_supplier_parts(api: InvenTreeAPI) -> None:
     print(f"  PASS  Multi-SKU SupplierParts ({skus})")
 
 
+def test_parameter_sync_delta(api: InvenTreeAPI) -> None:
+    """upload_parameters() delta-sync: overwrite present keys, leave others alone."""
+    from inventree_sync.client import upload_parameters
+
+    part = _track(Part.create(api, {
+        "name": f"{PREFIX} ParamPart",
+        "description": "param sync test",
+        "active": True,
+        "component": True,
+    }))
+
+    # First sync: A=1, B=2
+    upload_parameters(api, part, {"Resistance": "10kΩ", "Tolerance": "1%"})
+    snapshot1 = _params_by_name(api, part)
+    assert snapshot1 == {"Resistance": "10kΩ", "Tolerance": "1%"}, snapshot1
+
+    # Second sync: A overwritten, B not mentioned (must stay), C added.
+    upload_parameters(api, part, {"Resistance": "11kΩ", "Voltage": "50V"})
+    snapshot2 = _params_by_name(api, part)
+    assert snapshot2 == {
+        "Resistance": "11kΩ",   # overwritten
+        "Tolerance": "1%",      # unchanged (delta semantics)
+        "Voltage": "50V",        # new
+    }, snapshot2
+
+    print(f"  PASS  parameter sync delta ({snapshot2!r})")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -272,7 +320,8 @@ def main() -> int:
                    test_stencil_silently_reuse,
                    test_assembly_silently_reuse,
                    test_bom_idempotent,
-                   test_multi_sku_supplier_parts):
+                   test_multi_sku_supplier_parts,
+                   test_parameter_sync_delta):
             try:
                 tc(api)
             except AssertionError as e:
