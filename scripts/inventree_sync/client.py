@@ -450,7 +450,9 @@ def upload_parameters(
         return
     model_type = part.getModelType()
     for name, value in params.items():
-        if not name or value is None or value == "":
+        # Skip empties incl. whitespace-only — supplier APIs occasionally
+        # return padded strings (e.g. " "), which we don't want as parameters.
+        if not name or value is None or not str(value).strip():
             continue
         template = _find_or_create_parameter_template(api, name)
         if template is None:
