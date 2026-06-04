@@ -1,0 +1,33 @@
+name: Scheduled InvenTree Refresh
+
+on:
+  schedule:
+    # Nightly at 03:00 UTC. Adjust if Mouser's rate-limit window matters.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install runtime dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Run refresh
+        env:
+          INVENTREE_API_HOST: ${{ secrets.INVENTREE_API_HOST }}
+          INVENTREE_API_TOKEN: ${{ secrets.INVENTREE_API_TOKEN }}
+          MOUSER_API_KEY: ${{ secrets.MOUSER_API_KEY }}
+        continue-on-error: true
+        run: python3 scripts/inventree_refresh.py
