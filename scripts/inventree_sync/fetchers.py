@@ -30,7 +30,11 @@ def _make_retry_session() -> requests.Session:
     LCSC or a Mouser-API hiccup doesn't kill an 80-part marathon-sync:
 
       total=3              — three retries beyond the initial attempt
-      backoff_factor=2     — sleeps 0s, 2s, 4s between attempts
+      backoff_factor=1     — urllib3 sleeps backoff_factor * 2^(n-1) before
+                              retry n, with n=1 returning 0. That yields
+                              0s before retry 1, 2s before retry 2, 4s
+                              before retry 3 — the 0/2/4 schedule the spec
+                              calls for. (backoff_factor=2 would give 0/4/8.)
       status_forcelist     — 429 (rate-limit) + 5xx server errors
       allowed_methods      — GET (LCSC detail) + POST (LCSC search, Mouser)
       raise_on_status=False — the urllib3 retry layer does not raise on
@@ -48,7 +52,7 @@ def _make_retry_session() -> requests.Session:
     session = requests.Session()
     retry = urllib3.util.Retry(
         total=3,
-        backoff_factor=2,
+        backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET", "POST"],
         raise_on_status=False,
