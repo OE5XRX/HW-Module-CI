@@ -473,33 +473,40 @@ def test_dry_run_no_side_effects(api: InvenTreeAPI) -> None:
         tmp.write(csv_content)
         csv_path = tmp.name
 
-    # Baseline part count before dry-run
-    before = len(Part.list(api))
+    try:
+        # Baseline part count before dry-run
+        before = len(Part.list(api))
 
-    proc = subprocess.run(
-        [
-            sys.executable, "scripts/bom_export.py",
-            "--csv_file", csv_path,
-            "--name", f"{PREFIX}DryRunTest",
-            "--version", "1.0",
-            "--pcb_image", "doc/Icon.png",
-            "--assembly_image", "doc/Icon.png",
-            "--dry-run",
-        ],
-        env={**os.environ},
-        capture_output=True, text=True,
-        cwd=str(Path(__file__).resolve().parents[1]),
-    )
+        proc = subprocess.run(
+            [
+                sys.executable, "scripts/bom_export.py",
+                "--csv_file", csv_path,
+                "--name", f"{PREFIX}DryRunTest",
+                "--version", "1.0",
+                "--pcb_image", "doc/Icon.png",
+                "--assembly_image", "doc/Icon.png",
+                "--dry-run",
+            ],
+            env={**os.environ},
+            capture_output=True, text=True,
+            cwd=str(Path(__file__).resolve().parents[1]),
+        )
 
-    out = proc.stdout
-    assert "DRY-RUN:" in out, f"missing DRY-RUN marker in stdout:\n{out}\nSTDERR:\n{proc.stderr}"
-    assert "Would SKIP:" in out or "Would CREATE:" in out, f"missing decision lines:\n{out}"
-    assert "Summary:" in out, f"missing Summary line:\n{out}"
+        out = proc.stdout
+        assert "DRY-RUN:" in out, f"missing DRY-RUN marker in stdout:\n{out}\nSTDERR:\n{proc.stderr}"
+        assert "Would SKIP:" in out or "Would CREATE:" in out, f"missing decision lines:\n{out}"
+        assert "Summary:" in out, f"missing Summary line:\n{out}"
 
-    after = len(Part.list(api))
-    assert before == after, (
-        f"dry-run created {after - before} parts on the server (expected 0)")
-    print(f"  PASS  dry-run no side-effects (stdout {len(out)}B, parts unchanged)")
+        after = len(Part.list(api))
+        assert before == after, (
+            f"dry-run created {after - before} parts on the server (expected 0)")
+        print(f"  PASS  dry-run no side-effects (stdout {len(out)}B, parts unchanged)")
+    finally:
+        # Clean up the tempfile to avoid /tmp leaks on repeated runs.
+        try:
+            os.unlink(csv_path)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------

@@ -369,27 +369,30 @@ def main() -> None:
         else:
             reporter.record("CREATE", "Stencil", f"{args.name} SMT Stencil rev {args.version}")
 
-        # BomItem decisions: count would-be-created vs existing
+        # BomItem decisions: count from the reporter's own Parts records.
+        # entry.inventree_part can't be relied on here because the dry-run
+        # branches in ensure_parts_exist `continue` before appending — they
+        # only record decisions. Use the reporter's Parts CREATE+REUSE count
+        # as the closest proxy for "entries that would yield a BomItem".
+        parts_resolved = sum(
+            1 for r in reporter.records
+            if r.category == "Parts" and r.action in ("CREATE", "REUSE")
+        )
         if assembly_existing is None:
-            # Brand-new assembly → all entries would create items
-            reporter.record("CREATE", "BomItem",
-                            f"{sum(len(e.inventree_part) for e in entries) + 1} items "
-                            "(PCB + entries)")
+            reporter.record(
+                "CREATE", "BomItem",
+                f"{parts_resolved + 1} items (PCB + resolved entries)",
+            )
         else:
-            # Existing assembly → check overlap (simplified: count)
-            existing_items = BomItem.list(api, part=assembly_existing.pk)
-            existing_keys = {(int(bi.sub_part), bi.reference or "") for bi in existing_items}
-            would_create = 0
-            would_skip = 0
-            for entry in entries:
-                for inv_part in entry.inventree_part:
-                    if (inv_part.pk, entry.reference) in existing_keys:
-                        would_skip += 1
-                    else:
-                        would_create += 1
-            reporter.record("CREATE", "BomItem", f"{would_create} items")
-            if would_skip:
-                reporter.record("SKIP", "BomItem", f"{would_skip} items already present")
+            # Existing assembly: would create or skip depending on overlap
+            # with existing BomItems. We can't predict the exact split
+            # without simulating populate_bom against the real Part PKs
+            # (which we don't have for the CREATE-branch parts in dry-run).
+            reporter.record(
+                "CREATE", "BomItem",
+                f"up to {parts_resolved + 1} items (PCB + resolved entries)",
+                "exact create/skip split known only at sync time",
+            )
 
         reporter.print_report(title=f"bom_export {args.name} v{args.version}")
         if reporter.has_failures():
