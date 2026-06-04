@@ -51,6 +51,16 @@ def get_category_by_name(api: InvenTreeAPI, name: str) -> PartCategory:
 # CSV loading
 # ---------------------------------------------------------------------------
 
+def _split_sku_field(field: str) -> list[str]:
+    """Split a comma-separated SKU CSV cell into a clean list.
+
+    Handles human-edited CSV quirks: leading/trailing whitespace per token,
+    trailing commas producing empty tokens, etc. Returns only non-empty
+    stripped SKUs.
+    """
+    return [s.strip() for s in field.split(",") if s.strip()]
+
+
 def load_bom(csv_path: str) -> list[BomEntry]:
     """Parse the KiCad BOM CSV and return a list of BomEntry objects."""
     entries: list[BomEntry] = []
@@ -62,8 +72,8 @@ def load_bom(csv_path: str) -> list[BomEntry]:
                 kicad_part=row["Part"].strip(),
                 kicad_value=row["Value"].strip(),
                 kicad_footprint=row["Footprint"].strip(),
-                lcsc=row["LCSC"].split(",") if row["LCSC"].strip() else [],
-                mouser=row["MOUSER"].split(",") if row["MOUSER"].strip() else [],
+                lcsc=_split_sku_field(row["LCSC"]),
+                mouser=_split_sku_field(row["MOUSER"]),
             ))
     log.info("Loaded %d BOM entries from %s", len(entries), csv_path)
     return entries
