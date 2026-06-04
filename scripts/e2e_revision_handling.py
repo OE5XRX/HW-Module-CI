@@ -206,6 +206,44 @@ def test_bom_idempotent(api: InvenTreeAPI) -> None:
     print(f"  PASS  populate_bom idempotent ({n_first} BomItems both runs)")
 
 
+def test_multi_sku_supplier_parts(api: InvenTreeAPI) -> None:
+    """create_part_in_inventree(): two LCSC SKUs → two SupplierParts."""
+    from inventree_sync.client import create_part_in_inventree
+    from inventree_sync.models import PartData
+
+    supplier = _track_company(Company.create(api, {
+        "name": f"{PREFIX} TestSupplier", "is_supplier": True,
+    }))
+
+    pdata = PartData(
+        mpn=f"{PREFIX}-MPN",
+        manufacturer=f"{PREFIX} TestMfr",
+        description="multi-sku test",
+        lcsc_sku="DUMMY-LCSC-A",   # used as the "primary" by current code,
+                                    # but Task 5 must also create the rest
+    )
+    # The new signature must accept a SKU list. We will pass two SKUs and
+    # assert both end up as SupplierParts.
+    part = create_part_in_inventree(
+        api,
+        name=f"{PREFIX} MultiSkuPart",
+        part_data=pdata,
+        category=None,
+        lcsc_supplier=supplier,
+        mouser_supplier=None,
+        lcsc_skus=["DUMMY-LCSC-A", "DUMMY-LCSC-B"],
+        mouser_skus=[],
+    )
+    assert part is not None, "create_part_in_inventree returned None"
+    _track(part)
+
+    sps = SupplierPart.list(api, part=part.pk)
+    skus = sorted(sp.SKU for sp in sps)
+    assert skus == ["DUMMY-LCSC-A", "DUMMY-LCSC-B"], (
+        f"expected both SKUs as SupplierParts, got {skus}")
+    print(f"  PASS  Multi-SKU SupplierParts ({skus})")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -227,7 +265,8 @@ def main() -> int:
                    test_pcb_silently_reuse,
                    test_stencil_silently_reuse,
                    test_assembly_silently_reuse,
-                   test_bom_idempotent):
+                   test_bom_idempotent,
+                   test_multi_sku_supplier_parts):
             try:
                 tc(api)
             except AssertionError as e:
