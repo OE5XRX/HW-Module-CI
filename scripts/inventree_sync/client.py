@@ -225,11 +225,25 @@ def create_part_in_inventree(
     category: Optional[PartCategory],
     lcsc_supplier: Optional[Company],
     mouser_supplier: Optional[Company],
+    lcsc_skus: Optional[list[str]] = None,
+    mouser_skus: Optional[list[str]] = None,
 ) -> Optional[Part]:
     """
-    Create an InvenTree Part (with manufacturer/supplier parts) from *part_data*.
+    Create an InvenTree Part (with manufacturer/supplier parts) from
+    *part_data*.  *lcsc_skus*/*mouser_skus* may list multiple distributor
+    SKUs that all map to the same MPN; one SupplierPart is created per
+    SKU.  If omitted, falls back to single SKUs from *part_data*.
+
     Returns the created Part, or None on failure.
     """
+    # Normalize: filter empty/None entries and dedupe (preserving order) so
+    # downstream `not lcsc_skus` truthiness checks reflect "no usable SKU"
+    # and duplicate SKUs in the input don't trigger redundant create calls.
+    lcsc_skus = list(dict.fromkeys(
+        s for s in (lcsc_skus if lcsc_skus is not None else [part_data.lcsc_sku]) if s))
+    mouser_skus = list(dict.fromkeys(
+        s for s in (mouser_skus if mouser_skus is not None else [part_data.mouser_sku]) if s))
+
     # 1. Create the base part
     part_payload = {
         "name": name,
@@ -268,42 +282,57 @@ def create_part_in_inventree(
             except Exception as exc:
                 logger.warning("ManufacturerPart creation failed: %s", exc)
 
-    # 4. LCSC supplier part
-    if part_data.lcsc_sku and lcsc_supplier:
-        try:
-            sp = SupplierPart.create(api, {
-                "part": part.pk,
-                "supplier": lcsc_supplier.pk,
-                "SKU": part_data.lcsc_sku,
-                "manufacturer_part": None,
-            })
-            if part_data.price_breaks:
-                _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
-        except Exception as exc:
-            logger.warning("LCSC SupplierPart creation failed (%s): %s", part_data.lcsc_sku, exc)
+    # 4. LCSC supplier parts (one per SKU)
+    if lcsc_supplier:
+        for sku in lcsc_skus:
+            if not sku:
+                continue
+            try:
+                sp = SupplierPart.create(api, {
+                    "part": part.pk,
+                    "supplier": lcsc_supplier.pk,
+                    "SKU": sku,
+                    "manufacturer_part": None,
+                })
+                if part_data.price_breaks:
+                    _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
+            except Exception as exc:
+                logger.warning("LCSC SupplierPart creation failed (%s): %s", sku, exc)
 
-    # 5. Mouser supplier part
-    if part_data.mouser_sku and mouser_supplier:
-        try:
-            sp = SupplierPart.create(api, {
-                "part": part.pk,
-                "supplier": mouser_supplier.pk,
-                "SKU": part_data.mouser_sku,
-            })
-            # Use Mouser price breaks only if LCSC had none
-            if part_data.price_breaks and not part_data.lcsc_sku:
-                _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
-        except Exception as exc:
-            logger.warning("Mouser SupplierPart creation failed (%s): %s", part_data.mouser_sku, exc)
+    # 5. Mouser supplier parts (one per SKU)
+    if mouser_supplier:
+        # Mouser price breaks only when no LCSC SKU contributed prices.
+        attach_mouser_prices = part_data.price_breaks and not lcsc_skus
+        for sku in mouser_skus:
+            if not sku:
+                continue
+            try:
+                sp = SupplierPart.create(api, {
+                    "part": part.pk,
+                    "supplier": mouser_supplier.pk,
+                    "SKU": sku,
+                })
+                if attach_mouser_prices:
+                    _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
+            except Exception as exc:
+                logger.warning("Mouser SupplierPart creation failed (%s): %s", sku, exc)
 
     return part
 
 
 def find_existing_part(
-    api: InvenTreeAPI, lcsc_sku: str, mouser_sku: str
+    api: InvenTreeAPI,
+    lcsc_skus: list[str],
+    mouser_skus: list[str],
 ) -> Optional[Part]:
-    """Return the InvenTree Part if a SupplierPart with a matching SKU exists."""
-    for sku in filter(None, [lcsc_sku, mouser_sku]):
+    """Return the InvenTree Part if a SupplierPart matching ANY of the
+    given SKUs already exists.
+
+    Bug #4 fix: bisher pro Supplier nur ein einzelner SKU geprüft —
+    BOM-Entries mit mehreren Alternativen wurden ggf. als „neuer Part"
+    misinterpretiert obwohl ein Alternativ-SKU schon angelegt war.
+    """
+    for sku in [s for s in (lcsc_skus or []) + (mouser_skus or []) if s]:
         try:
             sp_list = SupplierPart.list(api, SKU=sku)
             if sp_list:
@@ -314,16 +343,56 @@ def find_existing_part(
 
 
 def find_part_by_name(api: InvenTreeAPI, name: str) -> Optional[Part]:
-    """Return the InvenTree Part with an exact name match, or None."""
+    """Return the InvenTree Part with an exact name match, or None.
+
+    Uses InvenTree's ``name=`` exact-filter (not ``search=`` which is a
+    substring match) so part names that share a prefix or substring don't
+    collide.  If multiple Parts have the same exact name (legal — e.g.
+    same name in different categories) the first is returned.
+
+    NOTE: Some InvenTree server versions silently ignore the ``name=``
+    filter and return all parts.  A post-filter on ``part.name == name``
+    is therefore always applied to guarantee an exact match.
+    """
     if not name:
         return None
     try:
-        results = Part.list(api, search=name)
-        for part in results:
-            if part.name == name:
-                return part
+        results = Part.list(api, name=name)
     except Exception as exc:
         logger.debug("Part name lookup failed for '%s': %s", name, exc)
+        return None
+    for part in results:
+        if part.name == name:
+            return part
+    return None
+
+
+def find_part_by_name_and_revision(
+    api: InvenTreeAPI, name: str, revision: str
+) -> Optional[Part]:
+    """Return the Part matching BOTH name AND revision, or None.
+
+    Used by ``bom_export.py`` to make PCB/Stencil/Assembly anlage
+    idempotent — if the same release tag is processed twice, the
+    second run should re-use the existing Part instead of trying to
+    create a duplicate (which would fail InvenTree's unique-together
+    constraint on name+revision).
+
+    NOTE: Some InvenTree server versions silently ignore the ``name=``/
+    ``revision=`` filters.  A post-filter on both attributes is
+    therefore always applied to guarantee an exact match.
+    """
+    if not name or not revision:
+        return None
+    try:
+        results = Part.list(api, name=name, revision=revision)
+    except Exception as exc:
+        logger.debug("Part name+revision lookup failed for '%s' rev %s: %s",
+                     name, revision, exc)
+        return None
+    for part in results:
+        if part.name == name and getattr(part, "revision", None) == revision:
+            return part
     return None
 
 
@@ -333,31 +402,60 @@ def ensure_supplier_parts(
     part_data: PartData,
     lcsc_supplier: Optional[Company],
     mouser_supplier: Optional[Company],
+    lcsc_skus: Optional[list[str]] = None,
+    mouser_skus: Optional[list[str]] = None,
 ) -> None:
-    """Add any missing SupplierParts to an already-existing InvenTree Part."""
+    """Add any missing SupplierParts to an already-existing InvenTree Part.
+
+    If *lcsc_skus*/*mouser_skus* are None, falls back to single SKUs from
+    *part_data* (backwards-compat for callers that haven't been migrated
+    to lists yet).  Idempotent: only creates SupplierParts whose SKU isn't
+    already attached to *part*.
+    """
+    # Normalize: filter empty/None entries and dedupe (preserving order) so
+    # downstream `not lcsc_skus` truthiness checks reflect "no usable SKU"
+    # and duplicate SKUs in the input don't trigger redundant create calls.
+    lcsc_skus = list(dict.fromkeys(
+        s for s in (lcsc_skus if lcsc_skus is not None else [part_data.lcsc_sku]) if s))
+    mouser_skus = list(dict.fromkeys(
+        s for s in (mouser_skus if mouser_skus is not None else [part_data.mouser_sku]) if s))
+
     try:
         existing_skus = {sp.SKU for sp in SupplierPart.list(api, part=part.pk)}
     except Exception:
         existing_skus = set()
 
-    if part_data.lcsc_sku and lcsc_supplier and part_data.lcsc_sku not in existing_skus:
-        try:
-            sp = SupplierPart.create(api, {
-                "part": part.pk,
-                "supplier": lcsc_supplier.pk,
-                "SKU": part_data.lcsc_sku,
-            })
-            if part_data.price_breaks:
-                _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
-        except Exception as exc:
-            logger.warning("Could not add LCSC supplier part: %s", exc)
+    if lcsc_supplier:
+        for sku in lcsc_skus:
+            if not sku or sku in existing_skus:
+                continue
+            try:
+                sp = SupplierPart.create(api, {
+                    "part": part.pk,
+                    "supplier": lcsc_supplier.pk,
+                    "SKU": sku,
+                })
+                existing_skus.add(sku)
+                if part_data.price_breaks:
+                    _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
+            except Exception as exc:
+                logger.warning("Could not add LCSC supplier part %s: %s", sku, exc)
 
-    if part_data.mouser_sku and mouser_supplier and part_data.mouser_sku not in existing_skus:
-        try:
-            SupplierPart.create(api, {
-                "part": part.pk,
-                "supplier": mouser_supplier.pk,
-                "SKU": part_data.mouser_sku,
-            })
-        except Exception as exc:
-            logger.warning("Could not add Mouser supplier part: %s", exc)
+    if mouser_supplier:
+        # Mirror create_part_in_inventree: Mouser prices only when no LCSC
+        # SKU contributed (LCSC is the primary price source when present).
+        attach_mouser_prices = part_data.price_breaks and not lcsc_skus
+        for sku in mouser_skus:
+            if not sku or sku in existing_skus:
+                continue
+            try:
+                sp = SupplierPart.create(api, {
+                    "part": part.pk,
+                    "supplier": mouser_supplier.pk,
+                    "SKU": sku,
+                })
+                existing_skus.add(sku)
+                if attach_mouser_prices:
+                    _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
+            except Exception as exc:
+                logger.warning("Could not add Mouser supplier part %s: %s", sku, exc)

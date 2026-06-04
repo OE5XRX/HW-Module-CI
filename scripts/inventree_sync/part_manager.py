@@ -125,19 +125,37 @@ def ensure_parts_exist(
         lcsc_sku = lcsc_skus[0] if lcsc_skus else ""
         mouser_sku = mouser_skus[0] if mouser_skus else ""
 
-        # Check if a matching SupplierPart already exists in InvenTree
-        existing = find_existing_part(api, lcsc_sku, mouser_sku)
+        # Check if a matching SupplierPart already exists in InvenTree —
+        # iterates ALL SKUs in the entry, so any alternate that's already
+        # in InvenTree resolves the entry.
+        existing = find_existing_part(api, lcsc_skus, mouser_skus)
         if existing:
             entry.inventree_part.append(existing)
             logger.info("Found existing part for %s: pk=%s", entry.reference, existing.pk)
+            # Only fetch + attach alternates when the entry actually HAS
+            # distinct alternates. Single-SKU cache-hits stay zero-network
+            # (the original pre-Multi-SKU behavior). Use a set so empty
+            # tokens ("" from CSV trailing commas) and duplicates ("C123"
+            # listed twice) don't artificially inflate the count.
+            if len({s for s in lcsc_skus + mouser_skus if s}) > 1:
+                # Fall back to an empty PartData if the supplier fetch fails —
+                # we can still attach the alternate SupplierParts without prices.
+                # Otherwise alternates would never land on the existing Part
+                # (a re-run would just hit the same fetch failure).
+                part_data = _fetch_and_merge(lcsc_fetcher, mouser_fetcher, lcsc_sku, mouser_sku) or PartData()
+                ensure_supplier_parts(
+                    api, existing, part_data,
+                    lcsc_supplier, mouser_supplier,
+                    lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+                )
             continue
 
-        # Fetch data from suppliers
+        # Fetch data from suppliers (primary SKU)
         part_data = _fetch_and_merge(lcsc_fetcher, mouser_fetcher, lcsc_sku, mouser_sku)
         if part_data is None:
             logger.warning(
                 "No supplier data found for %s (LCSC=%s, Mouser=%s)",
-                entry.reference, lcsc_sku, mouser_sku,
+                entry.reference, lcsc_skus, mouser_skus,
             )
             continue
 
@@ -149,12 +167,20 @@ def ensure_parts_exist(
                 "Part '%s' already exists (pk=%s); adding missing supplier parts",
                 name, existing_by_name.pk,
             )
-            ensure_supplier_parts(api, existing_by_name, part_data, lcsc_supplier, mouser_supplier)
+            ensure_supplier_parts(
+                api, existing_by_name, part_data,
+                lcsc_supplier, mouser_supplier,
+                lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+            )
             entry.inventree_part.append(existing_by_name)
             continue
 
         category = resolve_part_category(api, kicad_part, part_data, kicad_footprint, category_map)
-        inv_part = create_part_in_inventree(api, name, part_data, category, lcsc_supplier, mouser_supplier)
+        inv_part = create_part_in_inventree(
+            api, name, part_data, category,
+            lcsc_supplier, mouser_supplier,
+            lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+        )
         if inv_part:
             entry.inventree_part.append(inv_part)
         else:
