@@ -561,8 +561,16 @@ def test_dry_run_no_side_effects(api: InvenTreeAPI) -> None:
         assert "Summary:" in out, f"missing Summary line:\n{out}"
         # CRITICAL: R2 went through ensure_parts_exist as CREATE; it must NOT
         # also appear as FAIL even though its SKU has no SupplierPart yet.
-        assert "Would FAIL:  R2" not in out, (
-            f"dry-run double-reported R2 as CREATE+FAIL (bug from review):\n{out}")
+        # Per-line check (action labels are padded — "Would FAIL:" + ljust
+        # would produce 3 spaces before the target, but the padding is an
+        # implementation detail we don't want to lock in the assertion).
+        fail_lines_for_r2 = [
+            ln for ln in out.splitlines()
+            if "Would FAIL" in ln and "R2" in ln
+        ]
+        assert not fail_lines_for_r2, (
+            f"dry-run double-reported R2 as CREATE+FAIL (bug from review): "
+            f"{fail_lines_for_r2}\nfull output:\n{out}")
         # Net exit-code should be 0 because the only "miss" is a CREATE record.
         assert proc.returncode == 0, (
             f"dry-run exited {proc.returncode} on a CREATE-only BOM "

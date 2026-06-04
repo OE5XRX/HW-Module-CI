@@ -115,11 +115,18 @@ def refresh_part(
         # LCSC SKUs are present at all.
         apply_to_mouser = not lcsc_skus
         for sp in SupplierPart.list(api, part=part_pk):
-            try:
-                sp_supplier_name = (sp._data.get("supplier_detail") or {}).get("name", "").lower()
-            except Exception:
-                sp_supplier_name = ""
-            sp_is_mouser = "mouser" in sp_supplier_name
+            # Resolve supplier name. SupplierPart.list often omits
+            # supplier_detail — fall back to fetching the Company by pk.
+            # Without this fallback, sp_is_mouser would default to False and
+            # Mouser SupplierParts would silently get LCSC-primary prices
+            # applied (the exact regression this block exists to prevent).
+            sp_supplier_name = (sp._data.get("supplier_detail") or {}).get("name", "")
+            if not sp_supplier_name:
+                try:
+                    sp_supplier_name = Company(api, pk=int(sp.supplier)).name or ""
+                except Exception:
+                    sp_supplier_name = ""
+            sp_is_mouser = "mouser" in sp_supplier_name.lower()
             if sp_is_mouser and not apply_to_mouser:
                 continue  # preserve real Mouser prices
 

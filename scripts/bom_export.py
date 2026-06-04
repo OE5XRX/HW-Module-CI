@@ -358,7 +358,11 @@ def main() -> None:
     category_map = load_category_map(args.categories)
 
     if reporter is not None:
-        # Dry-run path: record decisions, skip API calls
+        # Dry-run path: record decisions, skip side-effecting operations
+        # (Part.create / SupplierPart.create / BomItem.create / save / supplier
+        # fetch). Read-only InvenTree lookups (find_part_by_name_and_revision,
+        # BomItem.list, SupplierPart.list in match_supplier_parts) still run —
+        # they're how we know whether something WOULD be CREATE vs REUSE.
         ensure_parts_exist(api, entries, category_map, reporter=reporter)
         match_supplier_parts(api, entries, reporter=reporter)
 
