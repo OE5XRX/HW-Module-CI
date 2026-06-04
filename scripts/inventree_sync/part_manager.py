@@ -80,6 +80,11 @@ def _fetch_and_merge(
             result.currency = mouser_data.currency
         if not result.description:
             result.description = mouser_data.description
+        # Parameters: LCSC primary, Mouser fills any keys LCSC didn't have.
+        # setdefault preserves LCSC's value when both suppliers report the
+        # same key — consistent with the LCSC-priority pattern above.
+        for k, v in (mouser_data.parameters or {}).items():
+            result.parameters.setdefault(k, v)
 
     # Stamp both SKUs on the merged result
     result.lcsc_sku = lcsc_sku
