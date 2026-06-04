@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
+from typing import Optional
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -69,8 +70,16 @@ def refresh_part(
     mouser_skus: list[str],
     lcsc_fetcher: LCSCFetcher,
     mouser_fetcher: MouserFetcher,
+    company_name_cache: Optional[dict[int, str]] = None,
 ) -> bool:
-    """Refresh one Part. Returns True on success, False on no-supplier-data."""
+    """Refresh one Part. Returns True on success, False on no-supplier-data.
+
+    *company_name_cache* maps supplier-pk → supplier-name, populated lazily
+    when SupplierPart.list omits supplier_detail. Pass the same dict across
+    all refresh_part calls to avoid the N+1 Company.get() pattern at scale.
+    """
+    if company_name_cache is None:
+        company_name_cache = {}
     part = Part(api, pk=part_pk)
     primary_lcsc = lcsc_skus[0] if lcsc_skus else ""
     primary_mouser = mouser_skus[0] if mouser_skus else ""
@@ -122,10 +131,14 @@ def refresh_part(
             # applied (the exact regression this block exists to prevent).
             sp_supplier_name = (sp._data.get("supplier_detail") or {}).get("name", "")
             if not sp_supplier_name:
-                try:
-                    sp_supplier_name = Company(api, pk=int(sp.supplier)).name or ""
-                except Exception:
-                    sp_supplier_name = ""
+                supplier_pk = int(sp.supplier)
+                sp_supplier_name = company_name_cache.get(supplier_pk, "")
+                if not sp_supplier_name:
+                    try:
+                        sp_supplier_name = Company(api, pk=supplier_pk).name or ""
+                    except Exception:
+                        sp_supplier_name = ""
+                    company_name_cache[supplier_pk] = sp_supplier_name
             sp_supplier_lower = sp_supplier_name.lower()
             sp_is_lcsc = "lcsc" in sp_supplier_lower
             sp_is_mouser = "mouser" in sp_supplier_lower
@@ -168,6 +181,11 @@ def main() -> int:
 
     lcsc_fetcher = LCSCFetcher()
     mouser_fetcher = MouserFetcher()
+    # Shared Company-name cache: SupplierPart.list often omits supplier_detail
+    # so refresh_part falls back to Company(api, pk).name. One dict across all
+    # parts means a Mouser/LCSC supplier is looked up once total, not once
+    # per Part — avoids the N+1 pattern on large inventories.
+    company_name_cache: dict[int, str] = {}
 
     refreshed = skipped = errors = 0
     for part_pk, sku_dict in parts_to_skus.items():
@@ -176,6 +194,7 @@ def main() -> int:
                 api, part_pk,
                 sku_dict["lcsc"], sku_dict["mouser"],
                 lcsc_fetcher, mouser_fetcher,
+                company_name_cache=company_name_cache,
             )
             if ok:
                 refreshed += 1
