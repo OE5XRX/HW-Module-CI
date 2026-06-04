@@ -134,8 +134,9 @@ def ensure_parts_exist(
             logger.info("Found existing part for %s: pk=%s", entry.reference, existing.pk)
             # Only fetch + attach alternates when the entry actually HAS
             # alternates. Single-SKU cache-hits stay zero-network (the
-            # original pre-Multi-SKU behavior).
-            if len(lcsc_skus) + len(mouser_skus) > 1:
+            # original pre-Multi-SKU behavior). Count only TRUTHY SKUs
+            # so CSV-trailing-comma "" entries don't trigger a fetch.
+            if sum(1 for s in lcsc_skus + mouser_skus if s) > 1:
                 # Fall back to an empty PartData if the supplier fetch fails —
                 # we can still attach the alternate SupplierParts without prices.
                 # Otherwise alternates would never land on the existing Part
