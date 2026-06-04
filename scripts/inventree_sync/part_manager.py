@@ -136,13 +136,16 @@ def ensure_parts_exist(
             # alternates. Single-SKU cache-hits stay zero-network (the
             # original pre-Multi-SKU behavior).
             if len(lcsc_skus) + len(mouser_skus) > 1:
-                part_data = _fetch_and_merge(lcsc_fetcher, mouser_fetcher, lcsc_sku, mouser_sku)
-                if part_data is not None:
-                    ensure_supplier_parts(
-                        api, existing, part_data,
-                        lcsc_supplier, mouser_supplier,
-                        lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
-                    )
+                # Fall back to an empty PartData if the supplier fetch fails —
+                # we can still attach the alternate SupplierParts without prices.
+                # Otherwise alternates would never land on the existing Part
+                # (a re-run would just hit the same fetch failure).
+                part_data = _fetch_and_merge(lcsc_fetcher, mouser_fetcher, lcsc_sku, mouser_sku) or PartData()
+                ensure_supplier_parts(
+                    api, existing, part_data,
+                    lcsc_supplier, mouser_supplier,
+                    lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+                )
             continue
 
         # Fetch data from suppliers (primary SKU)

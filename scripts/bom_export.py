@@ -141,7 +141,7 @@ def match_supplier_parts(api: InvenTreeAPI, entries: list[BomEntry]) -> None:
 # PCB + assembly + stencil creation
 # ---------------------------------------------------------------------------
 
-def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, version: str, image: str) -> Part:
+def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, version: str, image: str | None) -> Part:
     full_name = f"{name} PCB"
     existing = find_part_by_name_and_revision(api, full_name, version)
     if existing is not None:
@@ -161,7 +161,7 @@ def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, versio
     return part
 
 
-def create_assembly_part(api: InvenTreeAPI, category: PartCategory, name: str, version: str, image: str) -> Part:
+def create_assembly_part(api: InvenTreeAPI, category: PartCategory, name: str, version: str, image: str | None) -> Part:
     full_name = f"{name} Module"
     existing = find_part_by_name_and_revision(api, full_name, version)
     if existing is not None:
