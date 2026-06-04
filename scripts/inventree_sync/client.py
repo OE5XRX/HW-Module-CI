@@ -403,6 +403,14 @@ def find_part_by_name_and_revision(
     return None
 
 
+# Process-lifetime cache: template names → ParameterTemplate.  A typical
+# BOM sync hits the same template names (Resistance, Tolerance, Package, …)
+# hundreds of times across Parts. On servers that ignore the `name=` filter
+# (see find_part_by_name docstring) every lookup is a full-table scan, so
+# caching the resolved templates avoids many redundant network round-trips.
+_parameter_template_cache: dict[str, ParameterTemplate] = {}
+
+
 def _find_or_create_parameter_template(
     api: InvenTreeAPI, name: str
 ) -> Optional[ParameterTemplate]:
@@ -415,20 +423,27 @@ def _find_or_create_parameter_template(
     replaced the legacy part-scoped ``part/parameter/template/`` endpoint.
     Ref: https://github.com/inventree/InvenTree/pull/10699
     """
+    name = (name or "").strip()
     if not name:
         return None
+    cached = _parameter_template_cache.get(name)
+    if cached is not None:
+        return cached
     try:
         candidates = [
             t for t in ParameterTemplate.list(api, name=name)
             if t.name == name
         ]
         if candidates:
-            return candidates[0]
-        return ParameterTemplate.create(api, {"name": name})
+            template = candidates[0]
+        else:
+            template = ParameterTemplate.create(api, {"name": name})
     except Exception as exc:
         logger.warning(
             "ParameterTemplate find-or-create failed for %r: %s", name, exc)
         return None
+    _parameter_template_cache[name] = template
+    return template
 
 
 def _supplier_url(supplier_name: str, sku: str) -> str:
@@ -473,10 +488,13 @@ def upload_parameters(
     if not params:
         return
     model_type = part.getModelType()
-    for name, value in params.items():
-        # Skip empties incl. whitespace-only — supplier APIs occasionally
-        # return padded strings (e.g. " "), which we don't want as parameters.
-        if not name or value is None or not str(value).strip():
+    for raw_name, raw_value in params.items():
+        # Normalize both: strip name and value, skip if either ends up
+        # empty (supplier APIs occasionally return padded or blank
+        # strings).  Keeps Parameter.data and template names consistent.
+        name = (raw_name or "").strip()
+        value = "" if raw_value is None else str(raw_value).strip()
+        if not name or not value:
             continue
         template = _find_or_create_parameter_template(api, name)
         if template is None:
