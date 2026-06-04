@@ -139,15 +139,6 @@ jobs:
           clean-exclude: |
             v[0-9]*
 
-      # InvenTree integration disabled — the OE5XRX InvenTree server was
-      # decommissioned (2026-05) and not restored. The bom_export.py script
-      # remains in scripts/ for the day a new InvenTree instance comes back
-      # online; until then this step would burn a 10s connect-timeout per
-      # release run and spam the logs with "Server connection error".
-      # When InvenTree returns: re-enable this block and verify
-      # INVENTREE_API_HOST, INVENTREE_API_TOKEN and MOUSER_API_KEY
-      # org-secrets point at the new instance.
-      #
       - name: Generate parts on InvenTree server
         if: always()
         continue-on-error: true
