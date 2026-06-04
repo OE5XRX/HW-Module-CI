@@ -105,28 +105,26 @@ def generate_cost_report(
     api: InvenTreeAPI,
     assembly: Part,
     entries: list[BomEntry],
-    tiers: list[int] = [1, 10, 100],
+    tiers: tuple[int, ...] = (1, 10, 100),
 ) -> str:
     """Generate the cost report. Returns the Markdown string.
 
     Side effects:
       - Appends to $GITHUB_STEP_SUMMARY if the env-var is set.
-      - Patches assembly.notes via Part.save (best-effort, swallows errors).
+      - Patches assembly.notes via the SDK save() (best-effort, swallows errors).
     """
     # 1) Materialize per-entry price data.
-    items_with_prices: list[tuple[BomEntry, Part, dict[str, list[tuple[int, float]]]]] = []
+    items_with_prices: list[tuple[BomEntry, dict[str, list[tuple[int, float]]]]] = []
     items_missing: list[tuple[str, str]] = []
     for entry in entries:
-        # Only one inventree_part per entry in PR-2/PR-3 model; if multiple,
-        # we treat them as alternates and merge their price data.
+        # Multiple inventree_part entries are alternates (PR-3 Multi-SKU);
+        # merge their price data.
         merged: dict[str, list[tuple[int, float]]] = {}
         for inv_part in entry.inventree_part:
             for sup, breaks in _collect_price_data(api, inv_part).items():
                 merged.setdefault(sup, []).extend(breaks)
         if merged:
-            items_with_prices.append(
-                (entry, entry.inventree_part[0] if entry.inventree_part else None, merged)
-            )
+            items_with_prices.append((entry, merged))
         else:
             primary_name = entry.kicad_value or entry.kicad_part or entry.reference
             items_missing.append((entry.reference, primary_name))
@@ -136,7 +134,7 @@ def generate_cost_report(
     for tier_qty in tiers:
         total = 0.0
         sources: dict[str, int] = {}
-        for entry, _, price_data in items_with_prices:
+        for entry, price_data in items_with_prices:
             required = entry.qty * tier_qty
             cheapest = _cheapest_price(price_data, required)
             if cheapest is None:
@@ -159,7 +157,8 @@ def generate_cost_report(
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         try:
-            with open(summary_path, "a") as fh:
+            # encoding=utf-8 — markdown contains €.
+            with open(summary_path, "a", encoding="utf-8") as fh:
                 fh.write(md + "\n")
         except Exception as exc:
             log.warning("Failed to write GITHUB_STEP_SUMMARY: %s", exc)
