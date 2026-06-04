@@ -315,11 +315,54 @@ def create_stencil_part(
 # BOM population
 # ---------------------------------------------------------------------------
 
+def _update_min_stock(
+    entries: list[BomEntry],
+    planned_builds: int,
+) -> None:
+    """Set Part.minimum_stock = max(current, qty × planned_builds) per entry.
+
+    "Higher wins": if the same Part is referenced by another assembly with a
+    higher need, keep the higher value.  Equivalent if planned_builds is 1
+    and the Part already had minimum_stock=qty from a previous run.
+
+    Skips Parts that fail to save() — never raises, never blocks the sync.
+    PCB/Stencil/Assembly Parts are not touched (no BomEntry points at them
+    as a sub-part).
+    """
+    if planned_builds <= 0:
+        log.warning(
+            "Skipping minimum_stock update: planned_builds=%d is non-positive",
+            planned_builds)
+        return
+    for entry in entries:
+        needed = entry.qty * planned_builds
+        for inv_part in entry.inventree_part:
+            # `minimum_stock` is a number on the Part. Some InvenTree versions
+            # store it as int, others as string-coerced numeric; getattr +
+            # int(float(...)) with a default keeps the comparison robust.
+            try:
+                current = int(float(getattr(inv_part, "minimum_stock", 0) or 0))
+            except (TypeError, ValueError):
+                current = 0
+            if needed <= current:
+                continue
+            try:
+                inv_part.save({"minimum_stock": needed})
+                log.info(
+                    "Set minimum_stock=%d on pk=%s (%s × %d builds, was %d)",
+                    needed, inv_part.pk, entry.qty, planned_builds, current)
+            except Exception as exc:
+                log.warning(
+                    "minimum_stock update failed for pk=%s: %s",
+                    inv_part.pk, exc)
+
+
 def populate_bom(
     api: InvenTreeAPI,
     assembly: Part,
     pcb: Part,
     entries: list[BomEntry],
+    planned_builds: int = 0,
 ) -> None:
     """Create BomItems on *assembly*: one for the PCB, one per BomEntry.
 
@@ -327,6 +370,11 @@ def populate_bom(
     the same sub-parts with the same reference designators, the existing
     items are kept and the new creation is skipped.  Lets the workflow
     be re-run safely without producing duplicate BomItems.
+
+    *planned_builds* > 0 triggers a Part.minimum_stock update for every
+    BOM-resolved Part (max with current; higher wins).  Default 0 means
+    "don't touch minimum_stock" — backwards-compat for callers in tests
+    that don't care about stock thresholds.
     """
     existing = BomItem.list(api, part=assembly.pk)
     existing_keys: set[tuple[int, str]] = {
@@ -358,6 +406,9 @@ def populate_bom(
 
     log.info("BOM populated: %d new items, %d skipped (already present)",
              created, skipped)
+
+    if planned_builds > 0:
+        _update_min_stock(entries, planned_builds)
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +443,19 @@ def parse_args() -> argparse.Namespace:
             "Path to a YAML file mapping KiCad symbol names to InvenTree "
             "category hierarchies.  Defaults to the built-in "
             "default_categories.yaml shipped with the package."
+        ),
+    )
+    parser.add_argument(
+        "--planned-builds",
+        dest="planned_builds",
+        type=int,
+        default=10,
+        help=(
+            "Multiplier for Part.minimum_stock: needed = qty_per_PCB × "
+            "planned_builds.  Sets minimum_stock on every BOM-resolved "
+            "Part to make the InvenTree 'Low Stock' page useful as an "
+            "order list.  Higher existing values are preserved (never "
+            "decreased).  Default: 10."
         ),
     )
     parser.add_argument(
@@ -498,7 +562,7 @@ def main() -> None:
     PartRelated.add_related(api, pcb, stencil)
     log.info("Linked stencil to PCB as related part")
 
-    populate_bom(api, assembly, pcb, entries)
+    populate_bom(api, assembly, pcb, entries, planned_builds=args.planned_builds)
 
     # Cost-report (Backlog #11) — Markdown into $GITHUB_STEP_SUMMARY + assembly.notes
     try:
