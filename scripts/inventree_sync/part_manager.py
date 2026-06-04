@@ -132,22 +132,19 @@ def ensure_parts_exist(
         if existing:
             entry.inventree_part.append(existing)
             logger.info("Found existing part for %s: pk=%s", entry.reference, existing.pk)
-            # Only fetch + attach alternates when the entry actually HAS
-            # distinct alternates. Single-SKU cache-hits stay zero-network
-            # (the original pre-Multi-SKU behavior). Use a set so empty
-            # tokens ("" from CSV trailing commas) and duplicates ("C123"
-            # listed twice) don't artificially inflate the count.
-            if len({s for s in lcsc_skus + mouser_skus if s}) > 1:
-                # Fall back to an empty PartData if the supplier fetch fails —
-                # we can still attach the alternate SupplierParts without prices.
-                # Otherwise alternates would never land on the existing Part
-                # (a re-run would just hit the same fetch failure).
-                part_data = _fetch_and_merge(lcsc_fetcher, mouser_fetcher, lcsc_sku, mouser_sku) or PartData()
-                ensure_supplier_parts(
-                    api, existing, part_data,
-                    lcsc_supplier, mouser_supplier,
-                    lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
-                )
+            # Refresh on every cache-hit: PR-3 added parameter-sync to
+            # ensure_supplier_parts and the spec says re-runs MUST refresh
+            # supplier-side parameters too. Costs one supplier fetch per
+            # cache-hit entry; in exchange parameters land on existing Parts
+            # and any alternate SKUs get attached.
+            # Empty-PartData fallback: if the fetch fails (transient), we
+            # still attach alternates (without prices) and skip the params.
+            part_data = _fetch_and_merge(lcsc_fetcher, mouser_fetcher, lcsc_sku, mouser_sku) or PartData()
+            ensure_supplier_parts(
+                api, existing, part_data,
+                lcsc_supplier, mouser_supplier,
+                lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+            )
             continue
 
         # Fetch data from suppliers (primary SKU)
