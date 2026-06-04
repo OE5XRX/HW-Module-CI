@@ -76,20 +76,101 @@ def extract_package(footprint: str) -> str:
     return footprint.split("_")[0]
 
 
+# Unicode codepoints we normalize away from value strings:
+#   Ω (U+03A9) GREEK CAPITAL LETTER OMEGA  → KiCad uses this for ohms
+#   Ω (U+2126) OHM SIGN                    → some libraries use this instead
+#   µ (U+00B5) MICRO SIGN                  → micro (e.g. 4.7µF)
+_OMEGA_CHARS = ("Ω", "Ω")
+_MICRO_CHAR = "µ"
+
+# Known unit/SI-prefix tokens used in component values. Order is purely
+# stylistic — the \b boundary in the regex below prevents partial matches
+# (e.g. "k" cannot half-match "kHz" because the regex requires \b after
+# the unit token).
+_UNIT_TOKENS = (
+    "mHz", "MHz", "kHz", "Hz",
+    "mA", "A", "mV", "V", "W",
+    "uF", "nF", "pF", "F",
+    "uH", "nH", "mH", "H",
+    "m", "k", "M",      # bare SI prefixes used for resistors (10k, 1M, 470m)
+)
+
+
+def _normalize_value(value: str) -> str:
+    """Normalize a KiCad value string to a canonical form for part-name generation.
+
+    Rules (conservative — no SI-prefix conversion like 1000→1k):
+      - Strip Unicode Ω (U+03A9 GREEK CAPITAL LETTER OMEGA, U+2126 OHM SIGN).
+      - Convert µ (U+00B5) to ASCII u.
+      - Convert capital K (kilo) to lowercase k.  Lowercase m (milli) and
+        capital M (mega) are kept as-is — confusing them would create silent
+        unit errors.
+      - Collapse single whitespace between numeric prefix and unit/SI-prefix
+        token: "10 k" → "10k", "100 nF" → "100nF".
+      - Idempotent: ``_normalize_value(_normalize_value(x)) == _normalize_value(x)``.
+
+    Non-numeric strings (e.g. ``STM32U575CITx``) pass through unchanged.
+
+    Examples:
+        >>> _normalize_value("10K")
+        '10k'
+        >>> _normalize_value("10 kΩ")
+        '10k'
+        >>> _normalize_value("4.7µF")
+        '4.7uF'
+        >>> _normalize_value("1MΩ")
+        '1M'
+        >>> _normalize_value("STM32U575CITx")
+        'STM32U575CITx'
+    """
+    if not value:
+        return value
+
+    # 1. Strip Ω, convert µ → u.
+    out = value
+    for omega in _OMEGA_CHARS:
+        out = out.replace(omega, "")
+    out = out.replace(_MICRO_CHAR, "u")
+
+    # 2. Capital K (kilo) → lowercase k. Requires a digit on the left and a
+    #    word-boundary on the right. The \s* lets us handle "10 K" too.
+    #    Note: this regex does NOT protect IC part numbers like "BAT54K" —
+    #    protection comes from the call-site gating in generate_part_name,
+    #    which only invokes _normalize_value for R/C/L/CP/XTAL component
+    #    types where the kicad_value is a numeric-with-unit token.
+    out = re.sub(r"(\d)\s*K\b", r"\1k", out)
+
+    # 3. Collapse whitespace between digits and a known unit/prefix token.
+    #    Longest-first to avoid partial matches.
+    for tok in _UNIT_TOKENS:
+        # \b on the right of `tok` ensures we don't eat "kg" when matching "k".
+        out = re.sub(rf"(\d)\s+({re.escape(tok)})\b", r"\1\2", out)
+
+    out = out.strip()
+    return out
+
+
 def generate_part_name(kicad_part: str, kicad_value: str, footprint: str) -> str:
     """
     Generate a human-readable InvenTree part name from KiCad fields.
 
     Examples:
-      R, '10k', 'R_0805_2012Metric'          → 'R 10k 0805'
-      C, '100nF', 'C_0805_2012Metric'         → 'C 100nF 0805'
-      C_Polarized, '100u / 25V', ...           → 'CP 100u/25V'
-      Crystal, '8MHz / 20pF', ...              → 'XTAL 8MHz/20pF'
-      STM32U575CITx, 'STM32U575CITx', ...     → 'STM32U575CITx'
+      R, '10K', 'R_0805_2012Metric'         → 'R 10k 0805'  (normalized)
+      C, '100 nF', 'C_0805_2012Metric'       → 'C 100nF 0805' (normalized)
+      C_Polarized, '100u / 25V', ...          → 'CP 100u/25V'
+      Crystal, '8MHz / 20pF', ...             → 'XTAL 8MHz/20pF'
+      STM32U575CITx, 'STM32U575CITx', ...    → 'STM32U575CITx' (unchanged)
     """
-    # Normalise value: collapse spaces around '/' and consecutive spaces
+    # Collapse spaces around '/' and consecutive spaces (compound values).
     val = re.sub(r"\s*/\s*", "/", kicad_value.strip())
     val = re.sub(r"\s+", " ", val).strip()
+
+    # Apply value normalization ONLY for component types where the value
+    # is a numeric-with-unit token (R/C/L/CP/XTAL). For types like generic
+    # ICs (STM32U575CITx) the value IS the part number — normalizing it
+    # would silently mangle it.
+    if kicad_part in {"R", "C", "C_Polarized", "L", "L_Iron", "Crystal"}:
+        val = _normalize_value(val)
 
     if kicad_part == "R":
         return f"R {val} {extract_package(footprint)}"
