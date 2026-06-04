@@ -82,7 +82,9 @@ _created_categories: list[PartCategory] = []
 
 def _ensure_category(api: InvenTreeAPI, name: str) -> PartCategory:
     """Find-or-create a throwaway PartCategory, track for cleanup."""
-    existing = PartCategory.list(api, name=name)
+    # Post-filter: some InvenTree versions silently ignore the `name=` filter
+    # (verified for Part.list on v1.3.2; defensive here for PartCategory.list).
+    existing = [c for c in PartCategory.list(api, name=name) if c.name == name]
     if existing:
         return existing[0]
     cat = PartCategory.create(api, {"name": name, "description": "e2e test"})
