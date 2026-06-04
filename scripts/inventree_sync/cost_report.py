@@ -14,7 +14,7 @@ import os
 from typing import Optional
 
 from inventree.api import InvenTreeAPI
-from inventree.company import SupplierPart, SupplierPriceBreak
+from inventree.company import Company, SupplierPart, SupplierPriceBreak
 from inventree.part import Part
 
 from .models import BomEntry
@@ -77,14 +77,30 @@ def _render_markdown(
 def _collect_price_data(
     api: InvenTreeAPI,
     inv_part: Part,
+    _company_name_cache: Optional[dict[int, str]] = None,
 ) -> dict[str, list[tuple[int, float]]]:
-    """Fetch SupplierParts + their PriceBreaks for one InvenTree-Part."""
+    """Fetch SupplierParts + their PriceBreaks for one InvenTree-Part.
+
+    *_company_name_cache* is used by the caller (`generate_cost_report`) to
+    avoid N+1 Company.get() calls when several Parts share the same supplier.
+    """
+    if _company_name_cache is None:
+        _company_name_cache = {}
     out: dict[str, list[tuple[int, float]]] = {}
     for sp in SupplierPart.list(api, part=inv_part.pk):
-        # Resolve supplier name. The SDK exposes 'supplier' as the FK pk;
-        # we may need to fetch the Company. To avoid N+1 calls, attempt to
-        # read the cached '_data' attribute if present, else fall back.
-        sup_name = (sp._data.get("supplier_detail") or {}).get("name", "?")
+        # Resolve supplier name. Some InvenTree versions don't include
+        # supplier_detail in the SupplierPart.list response — fall back to
+        # fetching the Company by pk (cached).
+        sup_name = (sp._data.get("supplier_detail") or {}).get("name", "")
+        if not sup_name:
+            supplier_pk = int(sp.supplier)
+            sup_name = _company_name_cache.get(supplier_pk, "")
+            if not sup_name:
+                try:
+                    sup_name = Company(api, pk=supplier_pk).name or "?"
+                except Exception:
+                    sup_name = "?"
+                _company_name_cache[supplier_pk] = sup_name
         breaks = SupplierPriceBreak.list(api, part=sp.pk)
         if not breaks:
             continue
@@ -114,6 +130,10 @@ def generate_cost_report(
       - Patches assembly.notes via the SDK save() (best-effort, swallows errors).
     """
     # 1) Materialize per-entry price data.
+    # Shared Company-name cache: SupplierPart.list often omits supplier_detail,
+    # so _collect_price_data falls back to Company(api, pk).name. Cache so
+    # multiple BomEntries don't each pay for the same supplier lookup.
+    company_name_cache: dict[int, str] = {}
     items_with_prices: list[tuple[BomEntry, dict[str, list[tuple[int, float]]]]] = []
     items_missing: list[tuple[str, str]] = []
     for entry in entries:
@@ -121,7 +141,7 @@ def generate_cost_report(
         # merge their price data.
         merged: dict[str, list[tuple[int, float]]] = {}
         for inv_part in entry.inventree_part:
-            for sup, breaks in _collect_price_data(api, inv_part).items():
+            for sup, breaks in _collect_price_data(api, inv_part, company_name_cache).items():
                 merged.setdefault(sup, []).extend(breaks)
         if merged:
             items_with_prices.append((entry, merged))

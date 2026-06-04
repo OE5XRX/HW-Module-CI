@@ -172,6 +172,12 @@ def main() -> int:
         "Refresh complete: %d refreshed, %d skipped, %d errors",
         refreshed, skipped, errors,
     )
+    # Total-failure signal (every part errored) → exit 1 so a future
+    # Slack/Discord notifier can hook onto it. Partial failures (some
+    # parts errored, some refreshed) still return 0 — those are noise,
+    # not blockers, and continue-on-error keeps the cron job green.
+    if errors > 0 and refreshed == 0:
+        return 1
     return 0
 
 

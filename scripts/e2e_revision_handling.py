@@ -451,6 +451,11 @@ def test_cost_report_generation(api: InvenTreeAPI) -> None:
     # Tier 100: 2 units * 100 boards = 200 needed. Best valid break is qty>=100 at 0.2.
     # Total = 200 * 0.2 = 40.00, per-board = 0.40.
     assert "€40.00" in md, f"expected tier-100 total €40.00 in:\n{md}"
+    # Supplier name must surface in the Sources column. If supplier_detail
+    # ever stops being included in the SupplierPart.list response, this
+    # assertion catches it (without it, every supplier renders as "?").
+    assert "TestSupplierForCost" in md, (
+        f"supplier name missing from Sources column in:\n{md}")
 
     # Re-fetch the assembly to verify notes were patched.
     refreshed = Part(api, pk=assembly.pk)
@@ -515,10 +520,16 @@ def test_dry_run_no_side_effects(api: InvenTreeAPI) -> None:
     import subprocess
     import tempfile
 
+    # Mix SKIP (no SKU) and CREATE (synthetic LCSC SKU that won't resolve).
+    # The CREATE row is critical: it locks the CREATE→FAIL no-double-report
+    # contract (a brand-new SKU triggers CREATE in ensure_parts_exist; without
+    # the guard in match_supplier_parts it would also FAIL → CI false negative
+    # on every new part).
+    synthetic_sku = f"DRYRUN-{PREFIX}-NEW"
     csv_content = (
         '"References","Quantity Per PCB","Part","Value","Footprint","LCSC","MOUSER"\n'
-        '"R1","1","R","10k","R_0805_2012Metric","",""\n'
-        '"R2","1","R","10k","R_0805_2012Metric","",""\n'
+        '"R1","1","R","10k","R_0805_2012Metric","",""\n'  # no SKU → SKIP
+        f'"R2","1","R","10k","R_0805_2012Metric","{synthetic_sku}",""\n'  # new SKU → CREATE
     )
     with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as tmp:
         tmp.write(csv_content)
@@ -545,8 +556,17 @@ def test_dry_run_no_side_effects(api: InvenTreeAPI) -> None:
 
         out = proc.stdout
         assert "DRY-RUN:" in out, f"missing DRY-RUN marker in stdout:\n{out}\nSTDERR:\n{proc.stderr}"
-        assert "Would SKIP:" in out or "Would CREATE:" in out, f"missing decision lines:\n{out}"
+        assert "Would SKIP:" in out, f"expected Would SKIP line for R1:\n{out}"
+        assert "Would CREATE:" in out, f"expected Would CREATE line for R2:\n{out}"
         assert "Summary:" in out, f"missing Summary line:\n{out}"
+        # CRITICAL: R2 went through ensure_parts_exist as CREATE; it must NOT
+        # also appear as FAIL even though its SKU has no SupplierPart yet.
+        assert "Would FAIL:  R2" not in out, (
+            f"dry-run double-reported R2 as CREATE+FAIL (bug from review):\n{out}")
+        # Net exit-code should be 0 because the only "miss" is a CREATE record.
+        assert proc.returncode == 0, (
+            f"dry-run exited {proc.returncode} on a CREATE-only BOM "
+            f"(expected 0):\nSTDOUT:\n{out}\nSTDERR:\n{proc.stderr}")
 
         after = len(Part.list(api))
         assert before == after, (

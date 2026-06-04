@@ -152,8 +152,22 @@ def match_supplier_parts(
 
     missing = [e for e in entries if not e.inventree_part and (e.lcsc or e.mouser)]
     if missing:
+        # Dry-run guard: ensure_parts_exist already recorded CREATE for new
+        # entries. Those have lcsc/mouser SKUs but `find_existing_part` missed
+        # (truly new) → not yet in InvenTree → here they'd fall through into
+        # `missing`. Don't double-report them as FAIL — they ARE the
+        # CREATE entries from the prior step.
+        already_creating: set[str] = set()
+        if reporter is not None:
+            already_creating = {
+                r.target for r in reporter.records
+                if r.category == "Parts" and r.action == "CREATE"
+            }
+
         for entry in missing:
             if reporter is not None:
+                if entry.reference in already_creating:
+                    continue  # ensure_parts_exist already recorded this as CREATE
                 reporter.record(
                     "FAIL", "Parts", entry.reference,
                     f"no InvenTree match (LCSC={entry.lcsc}, Mouser={entry.mouser})",
