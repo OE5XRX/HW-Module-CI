@@ -181,24 +181,43 @@ def populate_bom(
     pcb: Part,
     entries: list[BomEntry],
 ) -> None:
-    """Create BomItems on *assembly*: one for the PCB, one per BomEntry."""
-    BomItem.create(api, {
-        "part": assembly.pk,
-        "sub_part": pcb.pk,
-        "reference": "",
-        "quantity": 1,
-    })
+    """Create BomItems on *assembly*: one for the PCB, one per BomEntry.
+
+    Idempotent: when the same Assembly already has BomItems linking to
+    the same sub-parts with the same reference designators, the existing
+    items are kept and the new creation is skipped.  Lets the workflow
+    be re-run safely without producing duplicate BomItems.
+    """
+    existing = BomItem.list(api, part=assembly.pk)
+    existing_keys: set[tuple[int, str]] = {
+        (int(bi.sub_part), bi.reference or "") for bi in existing
+    }
+    created = 0
+    skipped = 0
+
+    def _maybe_create(sub_part_pk: int, reference: str, qty: int) -> None:
+        nonlocal created, skipped
+        key = (int(sub_part_pk), reference or "")
+        if key in existing_keys:
+            skipped += 1
+            return
+        BomItem.create(api, {
+            "part": assembly.pk,
+            "sub_part": sub_part_pk,
+            "reference": reference,
+            "quantity": qty,
+        })
+        existing_keys.add(key)
+        created += 1
+
+    _maybe_create(pcb.pk, "", 1)
 
     for entry in entries:
         for inv_part in entry.inventree_part:
-            BomItem.create(api, {
-                "part": assembly.pk,
-                "sub_part": inv_part.pk,
-                "reference": entry.reference,
-                "quantity": entry.qty,
-            })
+            _maybe_create(inv_part.pk, entry.reference, entry.qty)
 
-    log.info("BOM populated with %d unique components", len(entries))
+    log.info("BOM populated: %d new items, %d skipped (already present)",
+             created, skipped)
 
 
 # ---------------------------------------------------------------------------

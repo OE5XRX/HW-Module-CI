@@ -173,6 +173,39 @@ def test_assembly_silently_reuse(api: InvenTreeAPI) -> None:
     print(f"  PASS  Assembly silently-reuse (both runs returned pk={first.pk})")
 
 
+def test_bom_idempotent(api: InvenTreeAPI) -> None:
+    """populate_bom(): second call with same parts produces no duplicate BomItems."""
+    from bom_export import create_assembly_part, create_pcb_part, populate_bom
+    from inventree_sync.models import BomEntry
+    cat = _ensure_category(api, f"{PREFIX} cat")
+
+    assembly = _track(create_assembly_part(api, cat, f"{PREFIX} BomTest", "1.0", image=None))
+    pcb = _track(create_pcb_part(api, cat, f"{PREFIX} BomTest", "1.0", image=None))
+    component = _track(Part.create(api, {
+        "name": f"{PREFIX} Comp1", "description": "comp", "active": True, "component": True}))
+
+    entry = BomEntry(
+        reference="R1",
+        qty=2,
+        kicad_part="R", kicad_value="10k", kicad_footprint="R_0805_2012Metric",
+    )
+    entry.inventree_part = [component]
+
+    # First call: populate
+    populate_bom(api, assembly, pcb, [entry])
+    items_first = BomItem.list(api, part=assembly.pk)
+    n_first = len(items_first)
+    assert n_first >= 2, f"expected >=2 BomItems after first populate, got {n_first}"
+
+    # Second call: must not duplicate
+    populate_bom(api, assembly, pcb, [entry])
+    items_second = BomItem.list(api, part=assembly.pk)
+    n_second = len(items_second)
+    assert n_second == n_first, (
+        f"populate_bom not idempotent: first={n_first}, second={n_second} BomItems")
+    print(f"  PASS  populate_bom idempotent ({n_first} BomItems both runs)")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -193,7 +226,8 @@ def main() -> int:
                    test_find_part_by_name_and_revision,
                    test_pcb_silently_reuse,
                    test_stencil_silently_reuse,
-                   test_assembly_silently_reuse):
+                   test_assembly_silently_reuse,
+                   test_bom_idempotent):
             try:
                 tc(api)
             except AssertionError as e:
