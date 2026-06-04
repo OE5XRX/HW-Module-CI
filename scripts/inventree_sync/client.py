@@ -436,15 +436,20 @@ def ensure_supplier_parts(
                 logger.warning("Could not add LCSC supplier part %s: %s", sku, exc)
 
     if mouser_supplier:
+        # Mirror create_part_in_inventree: Mouser prices only when no LCSC
+        # SKU contributed (LCSC is the primary price source when present).
+        attach_mouser_prices = part_data.price_breaks and not lcsc_skus
         for sku in mouser_skus:
             if not sku or sku in existing_skus:
                 continue
             try:
-                SupplierPart.create(api, {
+                sp = SupplierPart.create(api, {
                     "part": part.pk,
                     "supplier": mouser_supplier.pk,
                     "SKU": sku,
                 })
                 existing_skus.add(sku)
+                if attach_mouser_prices:
+                    _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
             except Exception as exc:
                 logger.warning("Could not add Mouser supplier part %s: %s", sku, exc)

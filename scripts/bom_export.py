@@ -165,7 +165,7 @@ def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, versio
         "revision": version,
         "component": True,
     })
-    if image:
+    if image is not None:
         assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
     log.info("Created PCB part '%s' rev %s (pk=%s)", full_name, version, part.pk)
     return part
@@ -187,7 +187,7 @@ def create_assembly_part(api: InvenTreeAPI, category: PartCategory, name: str, v
         "assembly": True,
         "trackable": True,
     })
-    if image:
+    if image is not None:
         assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
     log.info("Created assembly part '%s' rev %s (pk=%s)", full_name, version, part.pk)
     return part
@@ -213,7 +213,7 @@ def create_stencil_part(
         "revision": version,
         "component": True,
     })
-    if image:
+    if image is not None:
         assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
     log.info("Created stencil part '%s' rev %s (pk=%s)", full_name, version, part.pk)
     return part
