@@ -107,14 +107,33 @@ def refresh_part(
         upload_parameters(api, part, part_data.parameters)
 
     if part_data.price_breaks:
+        # Mirror the LCSC-primary invariant from client.create_part_in_inventree:
+        # _fetch_and_merge produces an LCSC-primary price_breaks dict (Mouser
+        # only fills gaps when LCSC didn't provide). Don't overwrite Mouser
+        # SupplierPart prices with LCSC's unless there's no LCSC contribution.
+        apply_to_mouser = not lcsc_skus  # only attach merged breaks to Mouser if no LCSC data
         for sp in SupplierPart.list(api, part=part_pk):
+            try:
+                sp_supplier_name = (sp._data.get("supplier_detail") or {}).get("name", "").lower()
+            except Exception:
+                sp_supplier_name = ""
+            sp_is_mouser = "mouser" in sp_supplier_name
+            if sp_is_mouser and not apply_to_mouser:
+                continue  # preserve real Mouser prices
+
+            # Clear-and-readd: only re-add if the delete actually completed,
+            # otherwise we'd stack new breaks on top of stale ones and
+            # accumulate duplicates across refresh runs.
+            cleared = True
             try:
                 for pb in SupplierPriceBreak.list(api, part=sp.pk):
                     pb.delete()
             except Exception as exc:
                 log.warning("Failed to clear price breaks SupplierPart pk=%s: %s",
                             sp.pk, exc)
-            _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
+                cleared = False
+            if cleared:
+                _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
 
     log.info("Refreshed pk=%s", part_pk)
     return True
