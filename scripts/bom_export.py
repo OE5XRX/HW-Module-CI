@@ -106,21 +106,24 @@ def match_supplier_parts(api: InvenTreeAPI, entries: list[BomEntry]) -> None:
     })
     supplier_parts: list[SupplierPart] = []
     if all_skus:
+        batch_failed = False
         try:
             supplier_parts = list(SupplierPart.list(api, SKU__in=all_skus))
         except Exception as exc:
             log.warning(
                 "SKU__in batch query raised (%s); will fall back to per-SKU",
                 exc)
+            batch_failed = True
 
         if not supplier_parts:
-            # Either filter unsupported (HTTP 400 swallowed by the client →
-            # empty list, indistinguishable from "no matches") or genuinely
-            # no SupplierParts on the server for any of these SKUs.  Probe
-            # per-SKU to disambiguate and recover.
-            log.info(
-                "Batch SKU lookup returned no results; falling back to "
-                "per-SKU queries for %d SKU(s)", len(all_skus))
+            # Empty result: either filter unsupported (HTTP 400 swallowed by
+            # the client → empty list, indistinguishable from "no matches"),
+            # genuinely no SupplierParts on the server, or the batch raised
+            # (warning already logged above). Probe per-SKU to recover.
+            if not batch_failed:
+                log.info(
+                    "Batch SKU lookup returned no results; falling back to "
+                    "per-SKU queries for %d SKU(s)", len(all_skus))
             for sku in all_skus:
                 try:
                     supplier_parts.extend(SupplierPart.list(api, SKU=sku))
