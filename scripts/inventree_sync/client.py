@@ -318,6 +318,10 @@ def create_part_in_inventree(
             except Exception as exc:
                 logger.warning("Mouser SupplierPart creation failed (%s): %s", sku, exc)
 
+    # 6. Parameters (LCSC + Mouser merged in part_data.parameters)
+    if part_data.parameters:
+        upload_parameters(api, part, part_data.parameters)
+
     return part
 
 
@@ -548,3 +552,7 @@ def ensure_supplier_parts(
                     _add_price_breaks(api, sp, part_data.price_breaks, part_data.currency)
             except Exception as exc:
                 logger.warning("Could not add Mouser supplier part %s: %s", sku, exc)
+
+    # Sync parameters on re-sync too — keeps existing Parts current.
+    if part_data.parameters:
+        upload_parameters(api, part, part_data.parameters)
