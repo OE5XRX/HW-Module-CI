@@ -236,10 +236,13 @@ def create_part_in_inventree(
 
     Returns the created Part, or None on failure.
     """
-    # Normalize + filter empty/None entries so downstream `not lcsc_skus`
-    # / `not mouser_skus` truthiness checks reflect "no usable SKU".
-    lcsc_skus = [s for s in (lcsc_skus if lcsc_skus is not None else [part_data.lcsc_sku]) if s]
-    mouser_skus = [s for s in (mouser_skus if mouser_skus is not None else [part_data.mouser_sku]) if s]
+    # Normalize: filter empty/None entries and dedupe (preserving order) so
+    # downstream `not lcsc_skus` truthiness checks reflect "no usable SKU"
+    # and duplicate SKUs in the input don't trigger redundant create calls.
+    lcsc_skus = list(dict.fromkeys(
+        s for s in (lcsc_skus if lcsc_skus is not None else [part_data.lcsc_sku]) if s))
+    mouser_skus = list(dict.fromkeys(
+        s for s in (mouser_skus if mouser_skus is not None else [part_data.mouser_sku]) if s))
 
     # 1. Create the base part
     part_payload = {
@@ -409,10 +412,13 @@ def ensure_supplier_parts(
     to lists yet).  Idempotent: only creates SupplierParts whose SKU isn't
     already attached to *part*.
     """
-    # Normalize + filter empty/None entries so downstream `not lcsc_skus`
-    # / `not mouser_skus` truthiness checks reflect "no usable SKU".
-    lcsc_skus = [s for s in (lcsc_skus if lcsc_skus is not None else [part_data.lcsc_sku]) if s]
-    mouser_skus = [s for s in (mouser_skus if mouser_skus is not None else [part_data.mouser_sku]) if s]
+    # Normalize: filter empty/None entries and dedupe (preserving order) so
+    # downstream `not lcsc_skus` truthiness checks reflect "no usable SKU"
+    # and duplicate SKUs in the input don't trigger redundant create calls.
+    lcsc_skus = list(dict.fromkeys(
+        s for s in (lcsc_skus if lcsc_skus is not None else [part_data.lcsc_sku]) if s))
+    mouser_skus = list(dict.fromkeys(
+        s for s in (mouser_skus if mouser_skus is not None else [part_data.mouser_sku]) if s))
 
     try:
         existing_skus = {sp.SKU for sp in SupplierPart.list(api, part=part.pk)}
