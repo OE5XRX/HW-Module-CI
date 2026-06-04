@@ -25,6 +25,7 @@ from inventree_sync import BomEntry, ensure_parts_exist
 from inventree_sync.attachments import attach_kibot_outputs
 from inventree_sync.categories import load_category_map
 from inventree_sync.client import find_part_by_name_and_revision
+from inventree_sync.cost_report import generate_cost_report
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -342,6 +343,12 @@ def main() -> None:
     log.info("Linked stencil to PCB as related part")
 
     populate_bom(api, assembly, pcb, entries)
+
+    # Cost-report (Backlog #11) — Markdown into $GITHUB_STEP_SUMMARY + assembly.notes
+    try:
+        generate_cost_report(api, assembly, entries)
+    except Exception as exc:
+        log.warning("Cost-report generation failed: %s", exc)
 
     if args.output_dir:
         attach_kibot_outputs(api, pcb, assembly, stencil, args.output_dir)

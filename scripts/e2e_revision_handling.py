@@ -403,6 +403,62 @@ def test_attachment_idempotent(api: InvenTreeAPI) -> None:
         print(f"  PASS  attachment idempotent (total={total_1}, second run no-op)")
 
 
+def test_cost_report_generation(api: InvenTreeAPI) -> None:
+    """generate_cost_report() produces Markdown + patches assembly.notes."""
+    from inventree.company import Company, SupplierPart, SupplierPriceBreak
+    from bom_export import create_assembly_part, create_pcb_part
+    from inventree_sync.cost_report import generate_cost_report
+    from inventree_sync.models import BomEntry
+    cat = _ensure_category(api, f"{PREFIX} cat")
+
+    # Test infrastructure: one Company, one Part with price breaks, one BomEntry.
+    supplier = _track_company(Company.create(api, {
+        "name": f"{PREFIX} TestSupplierForCost", "is_supplier": True,
+    }))
+    component = _track(Part.create(api, {
+        "name": f"{PREFIX} CostComp", "description": "comp", "active": True,
+        "component": True, "purchaseable": True,
+    }))
+    sp = SupplierPart.create(api, {
+        "part": component.pk, "supplier": supplier.pk,
+        "SKU": f"{PREFIX}-SKU-1",
+    })
+    SupplierPriceBreak.create(api, {
+        "part": sp.pk, "quantity": 1, "price": "0.5", "price_currency": "EUR",
+    })
+    SupplierPriceBreak.create(api, {
+        "part": sp.pk, "quantity": 100, "price": "0.2", "price_currency": "EUR",
+    })
+
+    assembly = _track(create_assembly_part(api, cat, f"{PREFIX} CostTest", "1.0", image=None))
+    pcb = _track(create_pcb_part(api, cat, f"{PREFIX} CostTest", "1.0", image=None))
+
+    entry = BomEntry(
+        reference="U1", qty=2,
+        kicad_part="X", kicad_value="CostTest", kicad_footprint="dummy",
+    )
+    entry.inventree_part = [component]
+
+    md = generate_cost_report(api, assembly, [entry], tiers=(1, 10, 100))
+
+    # Sanity: markdown contains expected pieces.
+    assert "## BOM Cost Report" in md, f"missing header in:\n{md}"
+    assert "| 1 |" in md and "| 10 |" in md and "| 100 |" in md, (
+        f"missing tier rows in:\n{md}")
+    # Tier 1: 2 units * 1 board = 2 needed. Best valid break is qty>=1 at 0.5.
+    # Total = 2 * 0.5 = 1.00, per-board = 1.00.
+    assert "€1.00" in md, f"expected tier-1 total €1.00 in:\n{md}"
+    # Tier 100: 2 units * 100 boards = 200 needed. Best valid break is qty>=100 at 0.2.
+    # Total = 200 * 0.2 = 40.00, per-board = 0.40.
+    assert "€40.00" in md, f"expected tier-100 total €40.00 in:\n{md}"
+
+    # Re-fetch the assembly to verify notes were patched.
+    refreshed = Part(api, pk=assembly.pk)
+    notes = getattr(refreshed, "notes", None) or refreshed._data.get("notes") or ""
+    assert "BOM Cost Report" in notes, f"assembly.notes not patched, got: {notes!r}"
+    print(f"  PASS  cost-report generation (markdown len={len(md)}, notes patched)")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -428,7 +484,8 @@ def main() -> int:
                    test_multi_sku_supplier_parts,
                    test_parameter_sync_delta,
                    test_supplier_link_populated,
-                   test_attachment_idempotent):
+                   test_attachment_idempotent,
+                   test_cost_report_generation):
             try:
                 tc(api)
             except AssertionError as e:
