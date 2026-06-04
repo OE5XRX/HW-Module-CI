@@ -15,6 +15,7 @@ existing attachments and skips files whose basename is already present.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from inventree.api import InvenTreeAPI
@@ -77,7 +78,15 @@ def attach_kibot_outputs(
             return existing_cache[target_kwarg]
         target = targets[target_kwarg]
         try:
-            names = {a.filename for a in target.getAttachments()}
+            # `filename` is a derived property on current InvenTree versions.
+            # Fall back to basename of `attachment` so a future server-side
+            # rename doesn't silently turn re-runs into re-uploads.
+            names = {
+                getattr(a, "filename", None)
+                or os.path.basename(getattr(a, "attachment", "") or "")
+                for a in target.getAttachments()
+            }
+            names.discard("")
         except Exception as exc:
             logger.warning(
                 "Could not list attachments for %s (pk=%s): %s",
