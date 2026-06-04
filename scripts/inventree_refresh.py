@@ -109,9 +109,11 @@ def refresh_part(
     if part_data.price_breaks:
         # Mirror the LCSC-primary invariant from client.create_part_in_inventree:
         # _fetch_and_merge produces an LCSC-primary price_breaks dict (Mouser
-        # only fills gaps when LCSC didn't provide). Don't overwrite Mouser
-        # SupplierPart prices with LCSC's unless there's no LCSC contribution.
-        apply_to_mouser = not lcsc_skus  # only attach merged breaks to Mouser if no LCSC data
+        # only fills gaps when LCSC didn't provide). Skip Mouser SupplierParts
+        # entirely when this Part has any LCSC SKUs — the LCSC-primary breaks
+        # would overwrite real Mouser prices. Only apply to Mouser when no
+        # LCSC SKUs are present at all.
+        apply_to_mouser = not lcsc_skus
         for sp in SupplierPart.list(api, part=part_pk):
             try:
                 sp_supplier_name = (sp._data.get("supplier_detail") or {}).get("name", "").lower()

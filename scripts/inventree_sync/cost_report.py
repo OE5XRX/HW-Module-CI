@@ -48,8 +48,15 @@ def _render_markdown(
     rows: list[tuple[int, float, float, dict[str, int]]],
     total_items: int,
     missing: list[tuple[str, str]],
+    no_break_per_tier: Optional[dict[int, list[str]]] = None,
 ) -> str:
-    """Render the cost-report Markdown string."""
+    """Render the cost-report Markdown string.
+
+    *no_break_per_tier* maps tier-qty → list of entry-references whose
+    price data exists but had no valid break for that tier (e.g., part
+    only stocks qty>=10 break, tier=1 requested). Surfaces silent
+    under-counting in the tier totals.
+    """
     lines = [
         f"## BOM Cost Report — {title}",
         "",
@@ -71,6 +78,14 @@ def _render_markdown(
         ]
     else:
         lines += ["", f"**BOM items:** {total_items} total — all had price data."]
+    if no_break_per_tier:
+        for qty in sorted(no_break_per_tier.keys()):
+            refs = no_break_per_tier[qty]
+            names = ", ".join(f"`{r}`" for r in refs)
+            lines.append(
+                f"**Tier {qty}:** {len(refs)} additional items had no qty-{qty} break "
+                f"(not in total above): {names}."
+            )
     return "\n".join(lines)
 
 
@@ -151,19 +166,27 @@ def generate_cost_report(
 
     # 2) Aggregate per tier.
     rows: list[tuple[int, float, float, dict[str, int]]] = []
+    no_break_per_tier: dict[int, list[str]] = {}
     for tier_qty in tiers:
         total = 0.0
         sources: dict[str, int] = {}
+        no_break_for_tier: list[str] = []  # entry.reference list
         for entry, price_data in items_with_prices:
             required = entry.qty * tier_qty
             cheapest = _cheapest_price(price_data, required)
             if cheapest is None:
+                # Has price data but no break qualifies for this tier (e.g.,
+                # part only has qty>=10 break but tier=1 needs qty=1). Track
+                # so the report can flag it instead of silently under-counting.
+                no_break_for_tier.append(entry.reference)
                 continue
             unit_price, supplier_name = cheapest
             total += unit_price * required
             sources[supplier_name] = sources.get(supplier_name, 0) + 1
         per_board = total / tier_qty if tier_qty > 0 else 0.0
         rows.append((tier_qty, total, per_board, sources))
+        if no_break_for_tier:
+            no_break_per_tier[tier_qty] = no_break_for_tier
 
     title = f"{assembly.name} rev {getattr(assembly, 'revision', '?')} (pk={assembly.pk})"
     md = _render_markdown(
@@ -171,6 +194,7 @@ def generate_cost_report(
         rows=rows,
         total_items=len(entries),
         missing=items_missing,
+        no_break_per_tier=no_break_per_tier,
     )
 
     # 3) Append to GitHub-Actions Step-Summary.

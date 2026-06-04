@@ -77,3 +77,32 @@ def test_render_markdown_no_missing_omits_vermerk():
         missing=[],
     )
     assert "had no price data" not in md
+
+
+def test_render_markdown_no_break_per_tier_listed():
+    """Items without a qty-X break for tier X surface as a per-tier note."""
+    rows = [(1, 0.0, 0.0, {})]
+    md = _render_markdown(
+        title="Test",
+        rows=rows,
+        total_items=3,
+        missing=[],
+        no_break_per_tier={1: ["R3", "R7"]},
+    )
+    assert "Tier 1:" in md
+    assert "2 additional items had no qty-1 break" in md
+    assert "R3" in md and "R7" in md
+    assert "not in total above" in md
+
+
+def test_render_markdown_no_break_per_tier_omitted_when_empty():
+    """When every part has a valid break per tier, no extra note is emitted."""
+    rows = [(1, 1.00, 1.00, {"LCSC": 5})]
+    md = _render_markdown(
+        title="Test",
+        rows=rows,
+        total_items=5,
+        missing=[],
+        no_break_per_tier={},
+    )
+    assert "Tier" not in md or "Tier 1:" not in md
