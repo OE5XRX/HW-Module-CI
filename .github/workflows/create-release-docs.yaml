@@ -63,12 +63,14 @@ jobs:
 
       - name: Generate stencil PNG from KiBot SVG
         shell: bash
+        env:
+          PROJECT: ${{ steps.setup.outputs.project-name }}
         run: |
           set -euo pipefail
           pip install -r _ci/scripts/requirements.txt
           python3 _ci/scripts/make_stencil_image.py \
-            "output/${{ steps.setup.outputs.project-name }}-stencil_top.svg" \
-            "output/${{ steps.setup.outputs.project-name }}-stencil_top.png"
+            "output/${PROJECT}-stencil_top.svg" \
+            "output/${PROJECT}-stencil_top.png"
 
       - name: Copy consumer-authored content into output folder
         shell: bash
@@ -147,14 +149,24 @@ jobs:
           INVENTREE_API_TOKEN: ${{ secrets.INVENTREE_API_TOKEN }}
           INVENTREE_API_HOST:  ${{ secrets.INVENTREE_API_HOST }}
           MOUSER_API_KEY:      ${{ secrets.MOUSER_API_KEY }}
+          PROJECT:             ${{ steps.setup.outputs.project-name }}
+          REF_NAME:            ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # --name uses the KiCad-project-name (e.g. "PowerBoard"), not the
+          # repository name ("HW-Module-PowerBoard") — keeps InvenTree-Part
+          # names like "PowerBoard PCB", "PowerBoard Module" aligned with the
+          # local marathon-sync workflow and the schematic title block.
+          # --version strips the leading 'v' from the tag, matching the
+          # schematic title-block convention (1.1 instead of v1.1) the
+          # 'Inject release version' step above already follows.
+          VERSION="${REF_NAME#v}"
           pip install -r _ci/scripts/requirements.txt
           python3 _ci/scripts/bom_export.py \
-            --csv_file       "output/${{ steps.setup.outputs.project-name }}-bom.csv" \
-            --name           "${{ github.event.repository.name }}" \
-            --version        "${{ github.ref_name }}" \
-            --pcb_image      "output/${{ steps.setup.outputs.project-name }}-3D_top-without.png" \
-            --assembly_image "output/${{ steps.setup.outputs.project-name }}-3D_top-with.png" \
-            --stencil_image  "output/${{ steps.setup.outputs.project-name }}-stencil_top.png" \
+            --csv_file       "output/${PROJECT}-bom.csv" \
+            --name           "${PROJECT}" \
+            --version        "${VERSION}" \
+            --pcb_image      "output/${PROJECT}-3D_top-without.png" \
+            --assembly_image "output/${PROJECT}-3D_top-with.png" \
+            --stencil_image  "output/${PROJECT}-stencil_top.png" \
             --output_dir     "output/"

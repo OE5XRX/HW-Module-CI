@@ -399,3 +399,46 @@ in `bom_export.py`, und behebt die nächste vorhersehbare Duplikat-Quelle.
 4. Marathon-Sync gegen Produktion (falls separater Server existiert, sonst
    ist das schon der Produktions-Sync — `parts.oe5xrx.org` ist offenbar die
    echte Instanz).
+
+---
+
+## CI-Integrations-Audit (PR-7)
+
+**Timeline:**
+- `c853bac` 2026-05: bom_export-Stage **disabled** im `create-release-docs.yaml`-
+  Workflow, weil der InvenTree-Server dekommissioniert wurde.
+- `60eed50` 2026-06-04 17:49: **Re-Enabled** + `--output_dir` für Attachment-
+  Auto-Discovery. Seitdem läuft die Stage wieder, ist aber bisher nur in
+  unseren Test-Re-Runs (mit `continue-on-error: true`) angeschlagen.
+- PR-3, PR-4, PR-5, PR-6 fügten Args dazu (alle optional/backwards-compat),
+  CI-Aufruf wurde nie aktiv re-validiert.
+
+**Befunde im CI-Aufruf (`.github/workflows/create-release-docs.yaml:153-160`):**
+
+1. `--name "${{ github.event.repository.name }}"` → liefert
+   `HW-Module-PowerBoard` (Repo-Name) statt `PowerBoard` (KiCad-Project-Name).
+   Damit würden InvenTree-Parts wie `HW-Module-PowerBoard PCB` entstehen, was
+   nicht zu den lokalen Marathon-Sync- und E2E-Test-Konventionen passt.
+2. `--version "${{ github.ref_name }}"` → liefert `v1.1` (Tag mit v-prefix)
+   statt `1.1`. Inkonsistent zur Title-Block-Convention im selben Workflow
+   (der `Inject release version`-Step strippt v schon).
+3. Beim Auditieren noch dazu: **Command-Injection-Hotspots** — drei
+   `${{ ... }}`-Inline-Templating-Stellen in `run:`-Blöcken (1× bom_export,
+   2× stencil-PNG-Step). Defensive Korrektur: env-var-Mapping (`env: PROJECT,
+   REF_NAME`), dann `"${PROJECT}"` / `"${REF_NAME#v}"`.
+
+**Fix in PR-7:** alle drei adressiert.
+
+**Followups (nicht in PR-7):**
+- `create-debug-docs.yaml` hatte dasselbe Inline-Templating im stencil-PNG-
+  Step (2 Stellen) — **mit-gefixt**, weil identisches Pattern.
+- v0.2-Tags rufen den shared workflow nicht auf (legacy inline create-release-
+  docs.yaml). Ein v0.2-Release-Re-Trigger würde **nicht** bom_export laufen
+  lassen — wer v0.2 syncen will, muss `bom_export.py` lokal mit den
+  Downloaded-Artifacts aufrufen.
+
+**Was bedeutet das für den Marathon-Sync?**
+- **CI-Variante:** ein einzelner `gh workflow run "Create Release Docs"
+  --ref v1.0` auf einem v1.x-Tag würde mit PR-7 korrekt syncen.
+- **Manuelle Variante:** wir tun's ohnehin per Hand — die haben wir in den
+  Dry-Runs bewährt.

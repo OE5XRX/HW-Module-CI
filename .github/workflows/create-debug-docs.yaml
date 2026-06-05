@@ -45,12 +45,14 @@ jobs:
 
       - name: Generate stencil PNG from KiBot SVG
         shell: bash
+        env:
+          PROJECT: ${{ steps.setup.outputs.project-name }}
         run: |
           set -euo pipefail
           pip install -r _ci/scripts/requirements.txt
           python3 _ci/scripts/make_stencil_image.py \
-            "output/${{ steps.setup.outputs.project-name }}-stencil_top.svg" \
-            "output/${{ steps.setup.outputs.project-name }}-stencil_top.png"
+            "output/${PROJECT}-stencil_top.svg" \
+            "output/${PROJECT}-stencil_top.png"
 
       - name: Upload artefacts
         uses: actions/upload-artifact@v7
