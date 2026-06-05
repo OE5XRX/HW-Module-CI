@@ -14,7 +14,7 @@ import requests
 from inventree.api import InvenTreeAPI
 from inventree.company import Company, ManufacturerPart, SupplierPart, SupplierPriceBreak
 from inventree.base import Parameter, ParameterTemplate
-from inventree.part import Part, PartCategory
+from inventree.part import Part, PartCategory, PartRelated
 
 from .models import PartData
 
@@ -773,3 +773,55 @@ def ensure_supplier_parts(
     # Sync parameters on re-sync too — keeps existing Parts current.
     if part_data.parameters:
         upload_parameters(api, part, part_data.parameters)
+
+
+def ensure_related_parts(
+    api: InvenTreeAPI,
+    part_a: Part,
+    part_b: Part,
+) -> None:
+    """Idempotent PartRelated linkage between two Parts.
+
+    PartRelated is symmetric on the server: a single (part_1, part_2)
+    unique-together constraint covers both directions, so checking
+    ``{pk_a, pk_b}`` against the existing relations is enough.
+
+    Behavior:
+      - Self-link (part_a is part_b) → noop.
+      - Existing link found (in either direction) → noop.
+      - Otherwise → PartRelated.add_related; errors are logged-and-skipped
+        per the sync-loop contract (never raise — would otherwise abort
+        the rest of the marathon-sync over a single failed relation).
+
+    Replaces the previous bare PartRelated.add_related call in bom_export.py
+    main() which crashed with HTTP 400 ``unique set`` on re-sync.
+    """
+    pk_a = int(part_a.pk)
+    pk_b = int(part_b.pk)
+    if pk_a == pk_b:
+        return
+    target = {pk_a, pk_b}
+
+    try:
+        existing = PartRelated.list(api)
+    except Exception as exc:
+        # Bail rather than blind-create: a transient list-failure would
+        # otherwise re-trigger the same HTTP 400 the helper exists to
+        # prevent. Next sync retries via the same code path.
+        logger.warning(
+            "PartRelated lookup failed; skipping link create to preserve "
+            "idempotency (next sync retries): %s", exc)
+        return
+
+    for r in existing:
+        if {int(r.part_1), int(r.part_2)} == target:
+            return  # already linked (either direction)
+
+    try:
+        PartRelated.add_related(api, part_a, part_b)
+        logger.info(
+            "Linked PartRelated %s ↔ %s", pk_a, pk_b)
+    except Exception as exc:
+        logger.warning(
+            "PartRelated.add_related failed for (%s, %s): %s",
+            pk_a, pk_b, exc)

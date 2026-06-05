@@ -844,6 +844,63 @@ def test_ensure_manufacturer_part_backfills_missing(api: InvenTreeAPI) -> None:
           f"(pk={target.pk}, MfrPart pk={mps[0].pk})")
 
 
+def test_ensure_related_parts_idempotent(api: InvenTreeAPI) -> None:
+    """ensure_related_parts creates a PartRelated link once, noops on re-call.
+
+    Reproduces the PowerBoard-v1.1 third-sync crash where the bare
+    PartRelated.add_related call returned HTTP 400 ("unique set") on a
+    Part pair that was already linked. PR-10 wraps it in an idempotent
+    helper.
+    """
+    from inventree.part import PartRelated
+    from inventree_sync.client import ensure_related_parts
+
+    part_a = _track(Part.create(api, {
+        "name": f"{PREFIX} RelA",
+        "description": "related part A",
+        "active": True, "component": True,
+    }))
+    part_b = _track(Part.create(api, {
+        "name": f"{PREFIX} RelB",
+        "description": "related part B",
+        "active": True, "component": True,
+    }))
+
+    target = {int(part_a.pk), int(part_b.pk)}
+
+    def _count_links() -> int:
+        return sum(
+            1 for r in PartRelated.list(api)
+            if {int(r.part_1), int(r.part_2)} == target
+        )
+
+    assert _count_links() == 0, "expected no PartRelated link initially"
+
+    # Call 1: creates the link.
+    ensure_related_parts(api, part_a, part_b)
+    assert _count_links() == 1, "expected 1 PartRelated link after first call"
+
+    # Call 2: idempotent — must NOT crash, must NOT duplicate.
+    ensure_related_parts(api, part_a, part_b)
+    assert _count_links() == 1, "expected still 1 PartRelated link after second call"
+
+    # Call 3: reversed arg order — symmetric, also idempotent.
+    ensure_related_parts(api, part_b, part_a)
+    assert _count_links() == 1, "reversed-args call must remain idempotent"
+
+    # Call 4: self-link — noop, no error.
+    ensure_related_parts(api, part_a, part_a)
+    self_target = {int(part_a.pk)}
+    self_count = sum(
+        1 for r in PartRelated.list(api)
+        if {int(r.part_1), int(r.part_2)} == self_target
+    )
+    assert self_count == 0, "self-link must be skipped"
+
+    print(f"  PASS  ensure_related_parts idempotent "
+          f"(pks={part_a.pk}↔{part_b.pk}, 4 calls → 1 link)")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -877,7 +934,8 @@ def main() -> int:
                    test_value_normalization_in_generated_name,
                    test_minimum_stock_set_and_preserved,
                    test_generic_connector_mpn_disambiguation,
-                   test_ensure_manufacturer_part_backfills_missing):
+                   test_ensure_manufacturer_part_backfills_missing,
+                   test_ensure_related_parts_idempotent):
             try:
                 tc(api)
             except AssertionError as e:
