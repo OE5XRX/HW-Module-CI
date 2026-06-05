@@ -60,14 +60,20 @@ def ensure_manufacturer_part(
     try:
         existing = ManufacturerPart.list(api, part=part.pk)
     except Exception as exc:
-        logger.debug("ManufacturerPart lookup failed for part=%s: %s", part.pk, exc)
-        existing = []
+        logger.warning(
+            "ManufacturerPart lookup failed for part=%s; skipping MfrPart "
+            "create to preserve idempotency (next sync retries): %s",
+            part.pk, exc)
+        return
     for mp in existing:
         if int(getattr(mp, "part", -1)) != int(part.pk):
             continue   # defensive: part= filter may have been ignored
         if (mp.MPN or "").strip() != mpn:
             continue
         existing_mfr_name = _resolve_manufacturer_name(api, int(mp.manufacturer))
+        if not existing_mfr_name:
+            logger.warning("Cannot resolve Company name; skipping to preserve idempotency.")
+            return
         if existing_mfr_name.lower() == target_name_lower:
             return  # exact (MPN, manufacturer) already linked on THIS Part
 

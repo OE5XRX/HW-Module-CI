@@ -196,6 +196,16 @@ def ensure_manufacturer_part(
         if (mp.MPN or "").strip() != mpn:
             continue
         existing_mfr_name = _resolve_manufacturer_name(api, int(mp.manufacturer))
+        if not existing_mfr_name:
+            # Couldn't resolve the Company name (transient Company.list error
+            # in _resolve_manufacturer_name). We can't tell whether this
+            # existing MfrPart matches our target manufacturer. Bail to
+            # preserve idempotency — next sync retries.
+            logger.warning(
+                "Cannot resolve Company name for ManufacturerPart pk=%s on "
+                "Part pk=%s; skipping MfrPart create to preserve idempotency "
+                "(next sync will retry).", mp.pk, part.pk)
+            return
         if existing_mfr_name.lower() == target_name_lower:
             return  # exact (MPN, manufacturer) already linked on THIS Part
 
