@@ -73,11 +73,15 @@ def ensure_manufacturer_part(
 
     Skips silently when:
       - mpn or manufacturer_name is empty / whitespace-only
-      - a ManufacturerPart with this MPN is already attached to *part*
+      - a ManufacturerPart with the SAME (MPN, manufacturer-name) pair is
+        already attached to *part* (case-insensitive). Different-manufacturer
+        alternates with the same MPN are NOT treated as already-linked —
+        they get a separate MfrPart, preserving second-source semantics.
       - get_or_create_manufacturer fails (returns None)
 
-    Post-filters the existing-MfrPart list on MPN match because some
-    InvenTree server versions ignore the ``MPN=`` filter (same defensive
+    Post-filters on (mp.part == part.pk) AND mp.MPN == mpn AND
+    Company(mp.manufacturer).name matches case-insensitively, because some
+    InvenTree server versions silently ignore filter kwargs (same defensive
     pattern as find_part_by_name / find_part_by_mpn_and_manufacturer).
 
     Errors during Create are logged but never raised — sync-loop callers

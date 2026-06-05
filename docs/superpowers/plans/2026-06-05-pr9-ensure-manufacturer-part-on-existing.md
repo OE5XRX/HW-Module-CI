@@ -37,14 +37,14 @@ def ensure_manufacturer_part(
 
     Skips silently when:
       - mpn or manufacturer_name is empty / whitespace-only
-      - a ManufacturerPart with this MPN is already attached to *part*
+      - a ManufacturerPart with the SAME (MPN, manufacturer-name) pair is
+        already attached to *part* (case-insensitive). Different-manufacturer
+        alternates with the same MPN are NOT treated as already-linked.
       - get_or_create_manufacturer fails (returns None)
 
-    Post-filters the existing-MfrPart list on MPN match because some
-    InvenTree server versions ignore the ``MPN=`` filter (same defensive
-    pattern as find_part_by_name / find_part_by_mpn_and_manufacturer).
-    Manufacturer name comparison is case-insensitive to absorb supplier-
-    side inconsistencies.
+    Post-filters on (mp.part == part.pk) AND mp.MPN == mpn AND
+    Company(mp.manufacturer).name matches case-insensitively, because some
+    InvenTree server versions silently ignore filter kwargs.
 
     Errors during Create are logged but never raised — sync-loop callers
     must not bail on a single MfrPart-create failure.
@@ -54,16 +54,22 @@ def ensure_manufacturer_part(
     if not mpn or not manufacturer_name:
         return
 
-    # Idempotency check: is there already a MfrPart on this Part with this MPN?
+    # Idempotency check on (MPN, manufacturer-name) — comparing only MPN
+    # would incorrectly skip second-source alternates.
+    target_name_lower = manufacturer_name.lower()
     try:
         existing = ManufacturerPart.list(api, part=part.pk)
     except Exception as exc:
         logger.debug("ManufacturerPart lookup failed for part=%s: %s", part.pk, exc)
         existing = []
     for mp in existing:
-        # Post-filter on MPN — server may ignore the filter.
-        if (mp.MPN or "").strip() == mpn:
-            return  # already linked, nothing to do
+        if int(getattr(mp, "part", -1)) != int(part.pk):
+            continue   # defensive: part= filter may have been ignored
+        if (mp.MPN or "").strip() != mpn:
+            continue
+        existing_mfr_name = _resolve_manufacturer_name(api, int(mp.manufacturer))
+        if existing_mfr_name.lower() == target_name_lower:
+            return  # exact (MPN, manufacturer) already linked on THIS Part
 
     # Need a Manufacturer Company first.
     manufacturer = get_or_create_manufacturer(api, manufacturer_name)
