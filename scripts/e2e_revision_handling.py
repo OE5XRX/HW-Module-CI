@@ -771,6 +771,60 @@ def test_generic_connector_mpn_disambiguation(api: InvenTreeAPI) -> None:
           f"({real_a!r} vs {real_b!r}, IC={ic_name!r})")
 
 
+def test_ensure_manufacturer_part_backfills_missing(api: InvenTreeAPI) -> None:
+    """ensure_supplier_parts backfills a missing ManufacturerPart (PR-9).
+
+    Reproduces the PowerBoard-v1.1 first-sync failure mode: a Part exists
+    without ManufacturerPart linkage (e.g. because the first sync ran
+    without Company-API permissions and the MfrPart-Create silently 403'd).
+    Calling ensure_supplier_parts on it must create the MfrPart from
+    part_data. Idempotent: a second call must not produce a duplicate.
+    """
+    from inventree.company import ManufacturerPart
+    from inventree_sync.client import ensure_supplier_parts
+    from inventree_sync.models import PartData
+
+    target = _track(Part.create(api, {
+        "name": f"{PREFIX} MfrBackfill",
+        "description": "mfr backfill",
+        "active": True,
+        "component": True,
+    }))
+    pd = PartData(
+        mpn=f"{PREFIX}-MPN-BACKFILL",
+        manufacturer=f"{PREFIX} BackfillMfr",
+    )
+
+    # Pre-condition: no MfrPart yet.
+    pre = ManufacturerPart.list(api, part=target.pk)
+    assert len(pre) == 0, f"expected 0 MfrPart, got {len(pre)}"
+
+    # Call 1: should create the MfrPart.
+    ensure_supplier_parts(
+        api, target, pd,
+        lcsc_supplier=None, mouser_supplier=None,
+    )
+    mps = ManufacturerPart.list(api, part=target.pk)
+    assert len(mps) == 1, f"expected 1 MfrPart after first call, got {len(mps)}"
+    assert (mps[0].MPN or "").strip() == pd.mpn, (
+        f"MfrPart.MPN expected {pd.mpn!r}, got {mps[0].MPN!r}")
+
+    # Track the manufacturer Company for cleanup.
+    _created_companies.append(Company(api, pk=mps[0].manufacturer))
+
+    # Call 2: idempotent — must not produce a second MfrPart.
+    ensure_supplier_parts(
+        api, target, pd,
+        lcsc_supplier=None, mouser_supplier=None,
+    )
+    mps2 = ManufacturerPart.list(api, part=target.pk)
+    assert len(mps2) == 1, (
+        f"expected MfrPart-count to remain 1 after second call, got {len(mps2)}")
+
+    print(f"  PASS  ensure_manufacturer_part backfill+idempotent "
+          f"(pk={target.pk}, MfrPart pk={mps[0].pk})")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -803,7 +857,8 @@ def main() -> int:
                    test_mpn_mfr_dedup,
                    test_value_normalization_in_generated_name,
                    test_minimum_stock_set_and_preserved,
-                   test_generic_connector_mpn_disambiguation):
+                   test_generic_connector_mpn_disambiguation,
+                   test_ensure_manufacturer_part_backfills_missing):
             try:
                 tc(api)
             except AssertionError as e:

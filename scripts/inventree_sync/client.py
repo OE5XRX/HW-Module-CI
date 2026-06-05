@@ -130,6 +130,68 @@ def get_or_create_manufacturer(api: InvenTreeAPI, name: str) -> Optional[Company
         return None
 
 
+def ensure_manufacturer_part(
+    api: InvenTreeAPI,
+    part: Part,
+    mpn: str,
+    manufacturer_name: str,
+) -> None:
+    """Idempotent ManufacturerPart linkage between *part* and a manufacturer.
+
+    Skips silently when:
+      - mpn or manufacturer_name is empty / whitespace-only
+      - a ManufacturerPart with this MPN is already attached to *part*
+      - get_or_create_manufacturer fails (returns None)
+
+    Post-filters the existing-MfrPart list on MPN match because some
+    InvenTree server versions silently ignore filter kwargs (same defensive
+    pattern as find_part_by_name and find_part_by_mpn_and_manufacturer).
+
+    Errors during Create are logged but never raised — sync-loop callers
+    must not bail on a single MfrPart-create failure.
+
+    Used by both create_part_in_inventree (new-Part path) and
+    ensure_supplier_parts (existing-Part path that may be missing the MfrPart
+    because a previous sync ran without Company-API permissions; see PR-9).
+    """
+    mpn = (mpn or "").strip()
+    manufacturer_name = (manufacturer_name or "").strip()
+    if not mpn or not manufacturer_name:
+        return
+
+    # Idempotency check: is there already a MfrPart on this Part with this MPN?
+    try:
+        existing = ManufacturerPart.list(api, part=part.pk)
+    except Exception as exc:
+        logger.debug(
+            "ManufacturerPart lookup failed for part=%s: %s", part.pk, exc)
+        existing = []
+    for mp in existing:
+        # Post-filter on MPN — server may ignore filter kwargs.
+        if (mp.MPN or "").strip() == mpn:
+            return  # already linked
+
+    manufacturer = get_or_create_manufacturer(api, manufacturer_name)
+    if manufacturer is None:
+        return
+
+    try:
+        ManufacturerPart.create(api, {
+            "part": part.pk,
+            "manufacturer": manufacturer.pk,
+            "MPN": mpn,
+        })
+        logger.info(
+            "Created ManufacturerPart %s / %s for Part pk=%s",
+            manufacturer_name, mpn, part.pk,
+        )
+    except Exception as exc:
+        logger.warning(
+            "ManufacturerPart creation failed for Part pk=%s (mpn=%s): %s",
+            part.pk, mpn, exc,
+        )
+
+
 def upload_image_from_url(part: Part, url: str) -> None:
     """Download an image from *url* and attach it to *part*.
 
@@ -269,19 +331,10 @@ def create_part_in_inventree(
     if part_data.image_url:
         upload_image_from_url(part, part_data.image_url)
 
-    # 3. Manufacturer part
-    if part_data.mpn and part_data.manufacturer:
-        manufacturer = get_or_create_manufacturer(api, part_data.manufacturer)
-        if manufacturer:
-            try:
-                ManufacturerPart.create(api, {
-                    "part": part.pk,
-                    "manufacturer": manufacturer.pk,
-                    "MPN": part_data.mpn,
-                })
-                logger.info("Created ManufacturerPart %s / %s", part_data.manufacturer, part_data.mpn)
-            except Exception as exc:
-                logger.warning("ManufacturerPart creation failed: %s", exc)
+    # 3. Manufacturer part (idempotent via ensure_manufacturer_part).
+    # Shared helper with ensure_supplier_parts so the new-Part and
+    # existing-Part paths produce identical MfrPart-linkage outcomes (PR-9).
+    ensure_manufacturer_part(api, part, part_data.mpn, part_data.manufacturer)
 
     # 4. LCSC supplier parts (one per SKU)
     if lcsc_supplier:
@@ -616,6 +669,14 @@ def ensure_supplier_parts(
     *part_data* (backwards-compat for callers that haven't been migrated
     to lists yet).  Idempotent: only creates SupplierParts whose SKU isn't
     already attached to *part*.
+
+    PR-9: also backfills a missing ManufacturerPart linkage. The
+    create_part_in_inventree path was the only place that ever created
+    MfrParts; if a previous sync ran without Company-API permissions
+    (HTTP 403, observed at the PowerBoard-v1.1 first-sync), the resulting
+    Parts have no MfrPart and the next sync would silently leave them
+    in that half-state. The ensure_manufacturer_part helper is idempotent
+    so this is a noop when the MfrPart is already linked.
     """
     # Normalize: filter empty/None entries and dedupe (preserving order) so
     # downstream `not lcsc_skus` truthiness checks reflect "no usable SKU"
@@ -624,6 +685,9 @@ def ensure_supplier_parts(
         s for s in (lcsc_skus if lcsc_skus is not None else [part_data.lcsc_sku]) if s))
     mouser_skus = list(dict.fromkeys(
         s for s in (mouser_skus if mouser_skus is not None else [part_data.mouser_sku]) if s))
+
+    # Idempotent ManufacturerPart linkage (PR-9 backfill).
+    ensure_manufacturer_part(api, part, part_data.mpn, part_data.manufacturer)
 
     try:
         existing_skus = {sp.SKU for sp in SupplierPart.list(api, part=part.pk)}
