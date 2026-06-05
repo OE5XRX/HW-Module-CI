@@ -789,6 +789,11 @@ def test_ensure_manufacturer_part_backfills_missing(api: InvenTreeAPI) -> None:
         "description": "mfr backfill",
         "active": True,
         "component": True,
+        # purchaseable=True mirrors create_part_in_inventree's payload so
+        # the test fixture matches the production-created Part exactly,
+        # in case a future InvenTree server version enforces purchasing
+        # constraints on attached SupplierParts.
+        "purchaseable": True,
     }))
     pd = PartData(
         mpn=f"{PREFIX}-MPN-BACKFILL",
