@@ -112,7 +112,9 @@ existing-skus query oder die LCSC/Mouser-Loops kommen — einfügen:
 ```python
     # PR-9: ManufacturerPart-Linkage nachziehen, falls fehlend (z.B. weil
     # der Part im ersten Sync wegen Company-403 ohne MfrPart angelegt
-    # wurde). Idempotent: vorhandener MfrPart wird nicht doppelt erzeugt.
+    # wurde). Idempotent auf das (MPN, manufacturer-name)-Paar — derselbe
+    # MPN von einem anderen Manufacturer (Second-Source-Alternate) wird
+    # absichtlich als zusätzlicher MfrPart angelegt.
     ensure_manufacturer_part(api, part, part_data.mpn, part_data.manufacturer)
 ```
 

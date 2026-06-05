@@ -119,12 +119,14 @@ def ensure_supplier_parts(api, part, part_data, ...):
     # ... existing normalize-skus code ...
 
     # PR-9: Wenn der Part im ersten Sync wegen Company-403 ohne MfrPart
-    # angelegt wurde, bei diesem Re-Sync nachziehen. Idempotent: ein
-    # bereits vorhandener MfrPart mit demselben MPN wird nicht doppelt
-    # erzeugt. ManufacturerPart muss VOR den SupplierParts da sein damit
-    # sie sich auf den richtigen MfrPart-pk linken können (manufacturer_part
-    # field auf SupplierPart). Heute lassen wir das Feld bewusst None,
-    # PR-9 bleibt davon entkoppelt — Backlog-Follow-up wenn nötig.
+    # angelegt wurde, bei diesem Re-Sync nachziehen. Idempotent auf das
+    # (MPN, manufacturer-name)-Paar: derselbe MPN von einem anderen
+    # Manufacturer (Second-Source-Alternate) wird absichtlich als
+    # zusätzlicher MfrPart angelegt. ManufacturerPart muss VOR den
+    # SupplierParts da sein damit sie sich auf den richtigen MfrPart-pk
+    # linken könnten (manufacturer_part field auf SupplierPart). Heute
+    # lassen wir das Feld bewusst None, PR-9 bleibt davon entkoppelt —
+    # Backlog-Follow-up wenn nötig.
     ensure_manufacturer_part(api, part, part_data.mpn, part_data.manufacturer)
 
     # ... existing supplier-part creation logic ...
