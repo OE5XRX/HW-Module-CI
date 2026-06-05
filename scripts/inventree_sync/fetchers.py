@@ -29,7 +29,7 @@ _IOS_UA = (
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _clean_description(text):
+def _clean_description(text: Optional[str]) -> Optional[str]:
     """Strip HTML tags and decode HTML entities from a supplier description.
 
     InvenTree's Part.description field rejects strings containing HTML

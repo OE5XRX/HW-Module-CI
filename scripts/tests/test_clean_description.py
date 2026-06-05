@@ -22,7 +22,7 @@ def test_empty_string():
 
 def test_none_input():
     """None must not raise — fetchers may pass through missing fields."""
-    assert _clean_description(None) == None  # noqa: E711 — explicit identity
+    assert _clean_description(None) is None
 
 
 def test_plain_text_unchanged():

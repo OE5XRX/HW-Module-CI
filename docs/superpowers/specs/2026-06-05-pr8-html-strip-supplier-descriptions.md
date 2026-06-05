@@ -53,11 +53,12 @@ In `scripts/inventree_sync/fetchers.py` auf Modul-Ebene (beide Klassen nutzen ih
 
 ```python
 import html
+from typing import Optional
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _clean_description(text: str) -> str:
+def _clean_description(text: Optional[str]) -> Optional[str]:
     """Strip HTML tags and decode HTML entities from a supplier description.
 
     InvenTree's Part.description field rejects strings containing HTML
