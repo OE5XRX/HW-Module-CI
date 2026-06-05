@@ -795,8 +795,15 @@ def test_ensure_manufacturer_part_backfills_missing(api: InvenTreeAPI) -> None:
         manufacturer=f"{PREFIX} BackfillMfr",
     )
 
+    def _mfrparts_for(pk: int) -> list:
+        """Defensive: server may ignore the part= filter (see PR-9 helper
+        docstring). Post-filter the response on mp.part == pk so the test
+        doesn't go flaky on a server that returns the global list."""
+        raw = ManufacturerPart.list(api, part=pk)
+        return [mp for mp in raw if int(getattr(mp, "part", -1)) == int(pk)]
+
     # Pre-condition: no MfrPart yet.
-    pre = ManufacturerPart.list(api, part=target.pk)
+    pre = _mfrparts_for(target.pk)
     assert len(pre) == 0, f"expected 0 MfrPart, got {len(pre)}"
 
     # Call 1: should create the MfrPart.
@@ -804,7 +811,7 @@ def test_ensure_manufacturer_part_backfills_missing(api: InvenTreeAPI) -> None:
         api, target, pd,
         lcsc_supplier=None, mouser_supplier=None,
     )
-    mps = ManufacturerPart.list(api, part=target.pk)
+    mps = _mfrparts_for(target.pk)
     assert len(mps) == 1, f"expected 1 MfrPart after first call, got {len(mps)}"
     assert (mps[0].MPN or "").strip() == pd.mpn, (
         f"MfrPart.MPN expected {pd.mpn!r}, got {mps[0].MPN!r}")
@@ -824,7 +831,7 @@ def test_ensure_manufacturer_part_backfills_missing(api: InvenTreeAPI) -> None:
         api, target, pd,
         lcsc_supplier=None, mouser_supplier=None,
     )
-    mps2 = ManufacturerPart.list(api, part=target.pk)
+    mps2 = _mfrparts_for(target.pk)
     assert len(mps2) == 1, (
         f"expected MfrPart-count to remain 1 after second call, got {len(mps2)}")
 
