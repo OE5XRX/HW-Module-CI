@@ -215,8 +215,14 @@ def ensure_parts_exist(
             entry.inventree_part.append(existing_by_mpn)
             continue
 
-        # Generate name; reuse if an InvenTree part with that name already exists
-        name = generate_part_name(kicad_part, kicad_value, kicad_footprint)
+        # Generate name; reuse if an InvenTree part with that name already exists.
+        # Pass part_data so generic-connector symbols (Conn_*, Screw_Terminal_*)
+        # can resolve to their MPN — protects against name-collisions when two
+        # physically distinct connectors share a KiCad symbol (PR-6).
+        # Dry-run path above intentionally calls without part_data (no fetch).
+        name = generate_part_name(
+            kicad_part, kicad_value, kicad_footprint, part_data=part_data,
+        )
         existing_by_name = find_part_by_name(api, name)
         if existing_by_name:
             logger.info(
