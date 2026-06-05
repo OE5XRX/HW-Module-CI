@@ -20,12 +20,12 @@ from typing import Optional
 
 from inventree.api import InvenTreeAPI
 from inventree.company import SupplierPart
-from inventree.part import BomItem, Part, PartCategory, PartRelated
+from inventree.part import BomItem, Part, PartCategory
 
 from inventree_sync import BomEntry, ensure_parts_exist
 from inventree_sync.attachments import attach_kibot_outputs
 from inventree_sync.categories import load_category_map
-from inventree_sync.client import find_part_by_name_and_revision
+from inventree_sync.client import ensure_related_parts, find_part_by_name_and_revision
 from inventree_sync.cost_report import generate_cost_report
 from inventree_sync.dry_run import DryRunReporter
 
@@ -559,8 +559,9 @@ def main() -> None:
 
     # Link stencil ↔ PCB as related parts (not BOM – the stencil is a
     # production tool, not a consumed component of the assembly).
-    PartRelated.add_related(api, pcb, stencil)
-    log.info("Linked stencil to PCB as related part")
+    # Idempotent via ensure_related_parts (PR-10): a bare
+    # PartRelated.add_related crashed on re-sync with HTTP 400 "unique set".
+    ensure_related_parts(api, pcb, stencil)
 
     populate_bom(api, assembly, pcb, entries, planned_builds=args.planned_builds)
 
