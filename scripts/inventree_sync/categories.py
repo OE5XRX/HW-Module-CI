@@ -234,10 +234,15 @@ def generate_part_name(
         # Schützt vor Name-Kollisionen bei physisch verschiedenen Bauteilen
         # die ein generisches KiCad-Symbol teilen (Conn_02x10_..., Conn_Coaxial,
         # Screw_Terminal_..., ...).
+        # Strip-first-then-check: ein whitespace-only MPN ("   ") darf nicht zum
+        # Empty-String-Part-Name werden — der ginge sonst still durch
+        # find_part_by_name (das None auf "" zurückgibt) bis in Part.create
+        # mit name="".
         if (part_data is not None
-                and part_data.mpn
                 and kicad_part.startswith(_GENERIC_SYMBOL_PREFIXES)):
-            return part_data.mpn.strip()
+            mpn_stripped = (part_data.mpn or "").strip()
+            if mpn_stripped:
+                return mpn_stripped
         return val
 
 

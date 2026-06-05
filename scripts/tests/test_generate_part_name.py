@@ -67,6 +67,21 @@ def test_generic_connector_falls_back_when_part_data_has_empty_mpn():
     ) == "Conn_02x10_Row_Letter_First"
 
 
+def test_generic_connector_falls_back_when_mpn_is_whitespace_only():
+    """Whitespace-only MPN must fall back, not return empty string.
+
+    Without the strip-first-then-check guard, ``"   ".strip()`` would
+    return ``""`` and silently propagate to ``find_part_by_name(api, "")``
+    and eventually ``Part.create(name="")`` — a downstream failure mode
+    far from this call site.
+    """
+    pd = _mpn("   ")
+    assert generate_part_name(
+        "Conn_02x10_Row_Letter_First", "Conn_02x10_Row_Letter_First",
+        "PCN10-20P-2.54DS", pd,
+    ) == "Conn_02x10_Row_Letter_First"
+
+
 def test_screw_terminal_uses_mpn():
     """Screw_Terminal_ prefix also triggers MPN-based naming."""
     pd = _mpn("MKDS-1,5/2-5.08")
