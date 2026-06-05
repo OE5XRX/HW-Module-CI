@@ -33,10 +33,8 @@ Args, `--dry-run`, `--output_dir` setzen → Output sichten.
 - LED, Fuse als generisches Symbol erhalten Single-Part-Aggregation.
 
 ### Beobachtungen
-1. **PCB/Stencil-Revision = `1.1`** statt `v1` (Backlog #2 ist nur halb
-   implementiert — silently-reuse ja, Major-only-Revision nein). Bei
-   nächstem Release (1.2) entsteht ein neuer PCB-Part obwohl Platine
-   byte-identisch. **Pre-Sync-Mini-PR-Kandidat.**
+1. ~~PCB/Stencil-Revision = `1.1` statt `v1`~~ — **STORNIERT 2026-06-05.**
+   User-Klarstellung: `1.1` ist die Vereins-Konvention. Kein Bug.
 2. **Inductor ohne Einheit: `L 6.8u`** — KiCad-Value ist `6.8u`, Generator
    hängt nichts an. Lesbarer wäre `L 6.8uH`. Verbesserungs-Kandidat aber
    nicht eilig.
@@ -278,14 +276,9 @@ XTAL 8MHz/20pF         Mouser 73-XT49M800-20  ← slash compound
 
 **🟡 Mittel (nice-to-have, nicht blockierend):**
 
-2. **PCB/Stencil Major-Revision (Beobachtung #1, Backlog #2 nur halb):**
-   - Heute: `revision=args.version` → `1.1`, `1.2`, … erzeugt neue PCB-Parts
-     pro Minor-Bump obwohl Platine byte-identisch.
-   - Fix: `revision = f"v{args.version.split('.')[0]}"` für PCB- und Stencil-,
-     Assembly bleibt `args.version`.
-   - **Konsequenz wenn nicht gefixt:** mit aktuellem Bestand (alle Module
-     v1.0/v1.1) nur **ein** Doppel-PCB-Part (PowerBoard v1.0 + v1.1).
-     Zukunftsbelastung wächst aber pro Minor-Bump.
+2. ~~**PCB/Stencil Major-Revision**~~ — **STORNIERT 2026-06-05.** User hat
+   bestätigt: `1.1` als PCB-Revision ist die Vereins-Konvention, nicht
+   Backlog-#2-Halbimplementierung. Beobachtung #1 oben ist damit hinfällig.
 
 3. **Inductor-Einheit anhängen (Beobachtung #2):**
    - Heute: `L 6.8u` (KiCad-Value `6.8u`).
