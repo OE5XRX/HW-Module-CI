@@ -809,8 +809,15 @@ def test_ensure_manufacturer_part_backfills_missing(api: InvenTreeAPI) -> None:
     assert (mps[0].MPN or "").strip() == pd.mpn, (
         f"MfrPart.MPN expected {pd.mpn!r}, got {mps[0].MPN!r}")
 
+    # Verify the linkage points at the right manufacturer Company
+    # (case-insensitive — get_or_create_manufacturer's contract).
+    mfr_company = Company(api, pk=mps[0].manufacturer)
+    assert (mfr_company.name or "").lower() == pd.manufacturer.lower(), (
+        f"linked manufacturer Company.name expected {pd.manufacturer!r} "
+        f"(case-insensitive), got {mfr_company.name!r}")
+
     # Track the manufacturer Company for cleanup.
-    _created_companies.append(Company(api, pk=mps[0].manufacturer))
+    _created_companies.append(mfr_company)
 
     # Call 2: idempotent — must not produce a second MfrPart.
     ensure_supplier_parts(

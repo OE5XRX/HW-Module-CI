@@ -159,7 +159,13 @@ def ensure_manufacturer_part(
     if not mpn or not manufacturer_name:
         return
 
-    # Idempotency check: is there already a MfrPart on this Part with this MPN?
+    # Idempotency check: is there already a MfrPart on this Part with the
+    # SAME (MPN, manufacturer-name) pair? Comparing only on MPN would
+    # incorrectly skip when the same MPN is offered by a different
+    # manufacturer (e.g. second-source alternates), so we also resolve
+    # each candidate MfrPart's Company name and compare case-insensitively.
+    # _resolve_manufacturer_name caches the Company.name lookups (PR-5).
+    target_name_lower = manufacturer_name.lower()
     try:
         existing = ManufacturerPart.list(api, part=part.pk)
     except Exception as exc:
@@ -167,9 +173,11 @@ def ensure_manufacturer_part(
             "ManufacturerPart lookup failed for part=%s: %s", part.pk, exc)
         existing = []
     for mp in existing:
-        # Post-filter on MPN — server may ignore filter kwargs.
-        if (mp.MPN or "").strip() == mpn:
-            return  # already linked
+        if (mp.MPN or "").strip() != mpn:
+            continue
+        existing_mfr_name = _resolve_manufacturer_name(api, int(mp.manufacturer))
+        if existing_mfr_name.lower() == target_name_lower:
+            return  # exact (MPN, manufacturer) already linked
 
     manufacturer = get_or_create_manufacturer(api, manufacturer_name)
     if manufacturer is None:

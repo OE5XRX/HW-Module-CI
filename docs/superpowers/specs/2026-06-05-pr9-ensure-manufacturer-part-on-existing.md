@@ -147,12 +147,15 @@ E2E-Coverage ausreicht.
 Entry-Point:
 
 1. Lege manuell einen Part an mit `name=f"{PREFIX} MfrBackfill"`, ohne MfrPart.
-2. Lege manuell einen Manufacturer (Company) an.
-3. Konstruiere ein `PartData(mpn="MPN-BACKFILL-X", manufacturer="<name>")`.
-4. Rufe `ensure_supplier_parts(api, part, part_data, lcsc_supplier=None, mouser_supplier=None)`.
-5. Assert: ManufacturerPart-Liste auf dem Part hat genau 1 Eintrag mit dem
-   erwarteten MPN + Manufacturer.
-6. Idempotenz: zweiter Aufruf → immer noch 1 MfrPart, kein duplicate.
+2. Konstruiere ein `PartData(mpn="MPN-BACKFILL-X", manufacturer="<name>")` —
+   der Manufacturer-Company wird **implizit** im ersten ensure-Call via
+   `get_or_create_manufacturer` angelegt (keine manuelle Vor-Erzeugung).
+3. Rufe `ensure_supplier_parts(api, part, part_data, lcsc_supplier=None, mouser_supplier=None)`.
+4. Assert: ManufacturerPart-Liste auf dem Part hat genau 1 Eintrag mit dem
+   erwarteten MPN UND der verknüpfte Company.name matched PartData.manufacturer
+   (case-insensitive — die Kontrakte von get_or_create_manufacturer und
+   ensure_manufacturer_part vergleichen so).
+5. Idempotenz: zweiter Aufruf → immer noch 1 MfrPart, kein duplicate.
 
 Vorhandener `test_multi_sku_supplier_parts` wird **nicht** geändert —
 deckt schon den new-Part-Pfad mit MfrPart-Creation ab (über
