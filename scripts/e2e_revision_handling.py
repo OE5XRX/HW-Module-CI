@@ -771,6 +771,79 @@ def test_generic_connector_mpn_disambiguation(api: InvenTreeAPI) -> None:
           f"({real_a!r} vs {real_b!r}, IC={ic_name!r})")
 
 
+def test_ensure_manufacturer_part_backfills_missing(api: InvenTreeAPI) -> None:
+    """ensure_supplier_parts backfills a missing ManufacturerPart (PR-9).
+
+    Reproduces the PowerBoard-v1.1 first-sync failure mode: a Part exists
+    without ManufacturerPart linkage (e.g. because the first sync ran
+    without Company-API permissions and the MfrPart-Create silently 403'd).
+    Calling ensure_supplier_parts on it must create the MfrPart from
+    part_data. Idempotent: a second call must not produce a duplicate.
+    """
+    from inventree.company import ManufacturerPart
+    from inventree_sync.client import ensure_supplier_parts
+    from inventree_sync.models import PartData
+
+    target = _track(Part.create(api, {
+        "name": f"{PREFIX} MfrBackfill",
+        "description": "mfr backfill",
+        "active": True,
+        "component": True,
+        # purchaseable=True mirrors create_part_in_inventree's payload so
+        # the test fixture matches the production-created Part exactly,
+        # in case a future InvenTree server version enforces purchasing
+        # constraints on attached SupplierParts.
+        "purchaseable": True,
+    }))
+    pd = PartData(
+        mpn=f"{PREFIX}-MPN-BACKFILL",
+        manufacturer=f"{PREFIX} BackfillMfr",
+    )
+
+    def _mfrparts_for(pk: int) -> list:
+        """Defensive: server may ignore the part= filter (see PR-9 helper
+        docstring). Post-filter the response on mp.part == pk so the test
+        doesn't go flaky on a server that returns the global list."""
+        raw = ManufacturerPart.list(api, part=pk)
+        return [mp for mp in raw if int(getattr(mp, "part", -1)) == int(pk)]
+
+    # Pre-condition: no MfrPart yet.
+    pre = _mfrparts_for(target.pk)
+    assert len(pre) == 0, f"expected 0 MfrPart, got {len(pre)}"
+
+    # Call 1: should create the MfrPart.
+    ensure_supplier_parts(
+        api, target, pd,
+        lcsc_supplier=None, mouser_supplier=None,
+    )
+    mps = _mfrparts_for(target.pk)
+    assert len(mps) == 1, f"expected 1 MfrPart after first call, got {len(mps)}"
+    assert (mps[0].MPN or "").strip() == pd.mpn, (
+        f"MfrPart.MPN expected {pd.mpn!r}, got {mps[0].MPN!r}")
+
+    # Verify the linkage points at the right manufacturer Company
+    # (case-insensitive — get_or_create_manufacturer's contract).
+    mfr_company = Company(api, pk=mps[0].manufacturer)
+    assert (mfr_company.name or "").lower() == pd.manufacturer.lower(), (
+        f"linked manufacturer Company.name expected {pd.manufacturer!r} "
+        f"(case-insensitive), got {mfr_company.name!r}")
+
+    # Track the manufacturer Company for cleanup.
+    _created_companies.append(mfr_company)
+
+    # Call 2: idempotent — must not produce a second MfrPart.
+    ensure_supplier_parts(
+        api, target, pd,
+        lcsc_supplier=None, mouser_supplier=None,
+    )
+    mps2 = _mfrparts_for(target.pk)
+    assert len(mps2) == 1, (
+        f"expected MfrPart-count to remain 1 after second call, got {len(mps2)}")
+
+    print(f"  PASS  ensure_manufacturer_part backfill+idempotent "
+          f"(pk={target.pk}, MfrPart pk={mps[0].pk})")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -803,7 +876,8 @@ def main() -> int:
                    test_mpn_mfr_dedup,
                    test_value_normalization_in_generated_name,
                    test_minimum_stock_set_and_preserved,
-                   test_generic_connector_mpn_disambiguation):
+                   test_generic_connector_mpn_disambiguation,
+                   test_ensure_manufacturer_part_backfills_missing):
             try:
                 tc(api)
             except AssertionError as e:
