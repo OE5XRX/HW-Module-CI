@@ -179,9 +179,15 @@ def ensure_manufacturer_part(
     try:
         existing = ManufacturerPart.list(api, part=part.pk)
     except Exception as exc:
-        logger.debug(
-            "ManufacturerPart lookup failed for part=%s: %s", part.pk, exc)
-        existing = []
+        # Bail rather than assume "no existing" — proceeding here would
+        # break the idempotency contract on a transient API error
+        # (we might create a duplicate of an MfrPart we couldn't see).
+        # A next sync retries via the same code path.
+        logger.warning(
+            "ManufacturerPart lookup failed for part=%s; skipping MfrPart "
+            "create to preserve idempotency (next sync will retry): %s",
+            part.pk, exc)
+        return
     for mp in existing:
         # Defensive: server may have ignored the part= filter and returned
         # MfrParts from other Parts. Reject any that don't belong to *part*.
@@ -209,8 +215,9 @@ def ensure_manufacturer_part(
         )
     except Exception as exc:
         logger.warning(
-            "ManufacturerPart creation failed for Part pk=%s (mpn=%s): %s",
-            part.pk, mpn, exc,
+            "ManufacturerPart creation failed for Part pk=%s "
+            "(mpn=%r, manufacturer=%r): %s",
+            part.pk, mpn, manufacturer_name, exc,
         )
 
 
