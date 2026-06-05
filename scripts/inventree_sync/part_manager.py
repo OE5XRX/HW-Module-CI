@@ -18,6 +18,7 @@ from .client import (
     create_part_in_inventree,
     ensure_supplier_parts,
     find_existing_part,
+    find_part_by_mpn_and_manufacturer,
     find_part_by_name,
     get_or_create_supplier,
 )
@@ -188,6 +189,30 @@ def ensure_parts_exist(
                 "No supplier data found for %s (LCSC=%s, Mouser=%s)",
                 entry.reference, lcsc_skus, mouser_skus,
             )
+            continue
+
+        # Dedup priority: SKU (above) → MPN+Manufacturer → Name.
+        # MPN+Mfr is more reliable than the generated name because it's a
+        # hardware-level identifier — survives our own naming conventions
+        # changing (e.g. the #19 value-normalizer landing in the same PR
+        # renames "R 10K 0805" → "R 10k 0805").
+        existing_by_mpn: Optional["Part"] = None
+        if part_data.mpn and part_data.manufacturer:
+            existing_by_mpn = find_part_by_mpn_and_manufacturer(
+                api, part_data.mpn, part_data.manufacturer
+            )
+        if existing_by_mpn:
+            logger.info(
+                "Part for MPN=%r mfr=%r already exists (pk=%s); "
+                "adding missing supplier parts",
+                part_data.mpn, part_data.manufacturer, existing_by_mpn.pk,
+            )
+            ensure_supplier_parts(
+                api, existing_by_mpn, part_data,
+                lcsc_supplier, mouser_supplier,
+                lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+            )
+            entry.inventree_part.append(existing_by_mpn)
             continue
 
         # Generate name; reuse if an InvenTree part with that name already exists

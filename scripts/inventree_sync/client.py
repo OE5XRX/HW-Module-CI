@@ -403,6 +403,80 @@ def find_part_by_name_and_revision(
     return None
 
 
+# Process-lifetime cache: Company-pk → name. ManufacturerPart-based dedup
+# (find_part_by_mpn_and_manufacturer) calls Company(api, pk).name once per
+# unique manufacturer pk; cache avoids the N+1 round-trip when a BOM has
+# many parts from the same manufacturer (typical: 30+ resistors from
+# Uniroyal, 20+ caps from Samsung).
+_manufacturer_name_cache: dict[int, str] = {}
+
+
+def _resolve_manufacturer_name(api: InvenTreeAPI, manufacturer_pk: int) -> str:
+    """Return Company(pk=manufacturer_pk).name with process-lifetime cache.
+
+    Empty string when the Company lookup fails — caller treats that as
+    'manufacturer not found' which fails the find_part_by_mpn_and_manufacturer
+    match safely.
+
+    Failures (empty name or exception) are NOT cached: a transient API
+    error must not turn into a permanent mismatch for the rest of the
+    process — that would defeat MPN+manufacturer dedup and cause
+    duplicate parts to be created later in the same run.
+    """
+    cached = _manufacturer_name_cache.get(manufacturer_pk)
+    if cached:
+        return cached
+    try:
+        name = Company(api, pk=manufacturer_pk).name or ""
+    except Exception:
+        return ""
+    if name:
+        _manufacturer_name_cache[manufacturer_pk] = name
+    return name
+
+
+def find_part_by_mpn_and_manufacturer(
+    api: InvenTreeAPI, mpn: str, manufacturer_name: str
+) -> Optional[Part]:
+    """Find an existing Part by ManufacturerPart MPN + manufacturer name.
+
+    Returns the linked Part when a ManufacturerPart exists whose MPN matches
+    *mpn* exactly AND whose linked Company name matches *manufacturer_name*
+    case-insensitively.  Returns None otherwise.
+
+    Defensive: post-filters on both MPN AND manufacturer name because some
+    InvenTree server versions silently ignore the ``MPN=`` filter (same
+    pattern as find_part_by_name).  Manufacturer-name comparison is
+    case-insensitive to absorb supplier-side inconsistencies (LCSC may
+    return "Texas Instruments", Mouser "TEXAS INSTRUMENTS").
+    """
+    mpn = (mpn or "").strip()
+    manufacturer_name = (manufacturer_name or "").strip()
+    if not mpn or not manufacturer_name:
+        return None
+    try:
+        candidates = ManufacturerPart.list(api, MPN=mpn)
+    except Exception as exc:
+        logger.debug("ManufacturerPart MPN lookup failed for %r: %s", mpn, exc)
+        return None
+
+    target_lower = manufacturer_name.lower()
+    for mp in candidates:
+        # Post-filter the MPN — server might have ignored the filter.
+        if (mp.MPN or "").strip() != mpn:
+            continue
+        # Post-filter the manufacturer name (case-insensitive).
+        mpn_mfr_name = _resolve_manufacturer_name(api, int(mp.manufacturer))
+        if mpn_mfr_name.lower() == target_lower:
+            try:
+                return Part(api, pk=int(mp.part))
+            except Exception as exc:
+                logger.debug("Part lookup for MfrPart pk=%s failed: %s",
+                             mp.pk, exc)
+                continue
+    return None
+
+
 # Process-lifetime cache: template names → ParameterTemplate.  A typical
 # BOM sync hits the same template names (Resistance, Tolerance, Package, …)
 # hundreds of times across Parts. On servers that ignore the `name=` filter

@@ -588,6 +588,138 @@ def test_dry_run_no_side_effects(api: InvenTreeAPI) -> None:
             pass
 
 
+def test_mpn_mfr_dedup(api: InvenTreeAPI) -> None:
+    """find_part_by_mpn_and_manufacturer: an existing Part is reused when
+    a second SKU references the same MPN+Manufacturer.
+
+    Direct test against the helper (no LCSC/Mouser fetch): construct one
+    manufacturer Company, one Part with a ManufacturerPart, then call the
+    lookup with the matching and non-matching arguments.
+    """
+    from inventree.company import ManufacturerPart
+    from inventree_sync.client import find_part_by_mpn_and_manufacturer
+
+    mfr = _track_company(Company.create(api, {
+        "name": f"{PREFIX} MfrDedup",
+        "is_manufacturer": True,
+    }))
+    other_mfr = _track_company(Company.create(api, {
+        "name": f"{PREFIX} OtherMfrDedup",
+        "is_manufacturer": True,
+    }))
+    target = _track(Part.create(api, {
+        "name": f"{PREFIX} MpnDedupPart",
+        "description": "mpn dedup",
+        "active": True,
+        "component": True,
+    }))
+    mpn = f"{PREFIX}-MPN-A"
+    ManufacturerPart.create(api, {
+        "part": target.pk,
+        "manufacturer": mfr.pk,
+        "MPN": mpn,
+    })
+
+    # 1. Matching MPN + matching manufacturer → finds the Part.
+    hit = find_part_by_mpn_and_manufacturer(api, mpn, mfr.name)
+    assert hit is not None and hit.pk == target.pk, (
+        f"expected pk={target.pk}, got {hit.pk if hit else None}")
+
+    # 2. Same MPN, wrong manufacturer → None (the post-filter must reject).
+    miss = find_part_by_mpn_and_manufacturer(api, mpn, other_mfr.name)
+    assert miss is None, (
+        f"expected None for mismatched manufacturer, got pk={miss.pk if miss else None}")
+
+    # 3. Wrong MPN, right manufacturer → None.
+    miss_mpn = find_part_by_mpn_and_manufacturer(api, f"{PREFIX}-MPN-NONE", mfr.name)
+    assert miss_mpn is None, (
+        f"expected None for missing MPN, got pk={miss_mpn.pk if miss_mpn else None}")
+
+    # 4. Case-insensitive manufacturer match.
+    hit_ci = find_part_by_mpn_and_manufacturer(api, mpn, mfr.name.upper())
+    assert hit_ci is not None and hit_ci.pk == target.pk, (
+        f"case-insensitive match failed, got {hit_ci.pk if hit_ci else None}")
+
+    print(f"  PASS  mpn_mfr_dedup ({mpn} → pk={target.pk}, 3 negative cases reject)")
+
+
+def test_value_normalization_in_generated_name(api: InvenTreeAPI) -> None:
+    """generate_part_name applies _normalize_value to R/C/L/CP/XTAL values.
+
+    Pure-function test that doesn't need any server side-effects, but lives
+    in the E2E harness because it exercises the integration point (`if
+    kicad_part in {...}: val = _normalize_value(val)`) rather than just the
+    helper.
+    """
+    from inventree_sync.categories import generate_part_name
+
+    cases = [
+        # (kicad_part, kicad_value, footprint, expected_name)
+        ("R", "10K", "R_0805_2012Metric", "R 10k 0805"),
+        ("R", "10 kΩ", "R_0805_2012Metric", "R 10k 0805"),
+        ("R", "10kΩ", "R_0805_2012Metric", "R 10k 0805"),
+        ("C", "100 nF", "C_0805_2012Metric", "C 100nF 0805"),
+        ("C", "4.7µF", "C_0805_2012Metric", "C 4.7uF 0805"),
+        ("Crystal", "8MHz/20pF", "Crystal_SMD_3225-4Pin", "XTAL 8MHz/20pF"),
+        # Non-RCL parts pass through unchanged:
+        ("STM32U575CITx", "STM32U575CITx", "TQFP-48", "STM32U575CITx"),
+    ]
+    failures = []
+    for kicad_part, value, footprint, expected in cases:
+        got = generate_part_name(kicad_part, value, footprint)
+        if got != expected:
+            failures.append(f"  {kicad_part!r}/{value!r} → {got!r}, expected {expected!r}")
+    assert not failures, "value-normalization mismatches:\n" + "\n".join(failures)
+    print(f"  PASS  value normalization in generate_part_name ({len(cases)} cases)")
+
+
+def test_minimum_stock_set_and_preserved(api: InvenTreeAPI) -> None:
+    """populate_bom with planned_builds sets minimum_stock; higher wins.
+
+    Constructs an Assembly + PCB + one component Part, then calls populate_bom
+    twice:
+      Pass 1: planned_builds=5, entry.qty=3 → minimum_stock should be 15.
+      Pass 2: planned_builds=2 (lower), entry.qty=3 → minimum_stock STAYS 15.
+    Verifies the "higher wins" contract from #15.
+    """
+    from bom_export import create_assembly_part, create_pcb_part, populate_bom
+    from inventree_sync import BomEntry
+    cat = _ensure_category(api, f"{PREFIX} cat")
+
+    assembly = _track(create_assembly_part(
+        api, cat, f"{PREFIX} MinStockTest", "1.0", image=None))
+    pcb = _track(create_pcb_part(
+        api, cat, f"{PREFIX} MinStockTest", "1.0", image=None))
+    component = _track(Part.create(api, {
+        "name": f"{PREFIX} MinStockComp",
+        "description": "min-stock test",
+        "active": True,
+        "component": True,
+    }))
+
+    entry = BomEntry(
+        reference="R1", qty=3,
+        kicad_part="R", kicad_value="10k", kicad_footprint="R_0805_2012Metric",
+    )
+    entry.inventree_part = [component]
+
+    # Pass 1: planned_builds=5 → minimum_stock should be 15 (3 × 5).
+    populate_bom(api, assembly, pcb, [entry], planned_builds=5)
+    refreshed = Part(api, pk=component.pk)
+    got = int(float(getattr(refreshed, "minimum_stock", 0) or 0))
+    assert got == 15, (
+        f"after first populate (planned=5, qty=3) minimum_stock={got}, expected 15")
+
+    # Pass 2: planned_builds=2 → would yield 6, but higher (15) wins.
+    populate_bom(api, assembly, pcb, [entry], planned_builds=2)
+    refreshed = Part(api, pk=component.pk)
+    got2 = int(float(getattr(refreshed, "minimum_stock", 0) or 0))
+    assert got2 == 15, (
+        f"second populate (planned=2, qty=3) should leave minimum_stock=15, got {got2}")
+
+    print(f"  PASS  minimum_stock set + preserved (pass1=15, pass2 still 15)")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -616,7 +748,10 @@ def main() -> int:
                    test_attachment_idempotent,
                    test_cost_report_generation,
                    test_dry_run_no_side_effects,
-                   test_refresh_idempotent):
+                   test_refresh_idempotent,
+                   test_mpn_mfr_dedup,
+                   test_value_normalization_in_generated_name,
+                   test_minimum_stock_set_and_preserved):
             try:
                 tc(api)
             except AssertionError as e:

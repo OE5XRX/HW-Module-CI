@@ -39,6 +39,53 @@ STENCIL_CATEGORY_NAME  = "SMT Stencil"
 
 
 # ---------------------------------------------------------------------------
+# Error collector
+# ---------------------------------------------------------------------------
+
+class ErrorCollector:
+    """Collect non-fatal sync errors and emit a single summary at the end.
+
+    Replaces the previous early-``sys.exit(1)`` in ``match_supplier_parts``:
+    a single missing-SupplierPart in an 80-part BOM should not kill the whole
+    sync, because the user needs to see *every* missing part to plan an
+    InvenTree-side cleanup or supplier escalation.
+
+    Usage::
+
+        collector = ErrorCollector()
+        match_supplier_parts(api, entries, collector=collector)
+        # ... rest of the flow ...
+        if collector.has_errors():
+            collector.print_summary()
+            sys.exit(1)
+    """
+
+    def __init__(self) -> None:
+        # (category, target, reason) — order preserved for the summary print.
+        self.errors: list[tuple[str, str, str]] = []
+
+    def add(self, category: str, target: str, reason: str) -> None:
+        """Record one error. Never raises."""
+        self.errors.append((category, target, reason))
+
+    def has_errors(self) -> bool:
+        return bool(self.errors)
+
+    def print_summary(self) -> None:
+        """Emit all collected errors at ERROR log level.
+
+        No-op when there are no errors — keeps the success-path log clean.
+        """
+        if not self.errors:
+            return
+        log.error("=" * 60)
+        log.error("Sync completed with %d error(s):", len(self.errors))
+        for category, target, reason in self.errors:
+            log.error("  [%s] %s — %s", category, target, reason)
+        log.error("=" * 60)
+
+
+# ---------------------------------------------------------------------------
 # Category lookup
 # ---------------------------------------------------------------------------
 
@@ -91,6 +138,7 @@ def match_supplier_parts(
     api: InvenTreeAPI,
     entries: list[BomEntry],
     reporter: Optional["DryRunReporter"] = None,
+    collector: Optional["ErrorCollector"] = None,
 ) -> None:
     """
     Match each BomEntry to its InvenTree Part via SupplierPart SKU lookup.
@@ -105,6 +153,14 @@ def match_supplier_parts(
         up.  The latter case defends against InvenTree versions that
         respond to an unsupported ``__in`` filter with HTTP 400 (which
         the InvenTree Python client silently converts to an empty list).
+
+    Errors (no matching SupplierPart for an entry with SKUs):
+      - With ``collector``: each entry is added to the collector; the
+        function continues processing the rest. Caller is responsible for
+        printing the summary and exiting non-zero.
+      - Without ``collector``: legacy behavior preserved — log error and
+        ``sys.exit(1)`` on the first miss (back-compat for any caller that
+        hasn't been migrated yet).
     """
     # sorted for deterministic API call order — helpful for log diffing.
     all_skus = sorted({
@@ -151,33 +207,36 @@ def match_supplier_parts(
                 break
 
     missing = [e for e in entries if not e.inventree_part and (e.lcsc or e.mouser)]
-    if missing:
-        # Dry-run guard: ensure_parts_exist already recorded CREATE for new
-        # entries. Those have lcsc/mouser SKUs but `find_existing_part` missed
-        # (truly new) → not yet in InvenTree → here they'd fall through into
-        # `missing`. Don't double-report them as FAIL — they ARE the
-        # CREATE entries from the prior step.
-        already_creating: set[str] = set()
-        if reporter is not None:
-            already_creating = {
-                r.target for r in reporter.records
-                if r.category == "Parts" and r.action == "CREATE"
-            }
+    if not missing:
+        return
 
-        for entry in missing:
-            if reporter is not None:
-                if entry.reference in already_creating:
-                    continue  # ensure_parts_exist already recorded this as CREATE
-                reporter.record(
-                    "FAIL", "Parts", entry.reference,
-                    f"no InvenTree match (LCSC={entry.lcsc}, Mouser={entry.mouser})",
-                )
-            else:
-                log.error("No InvenTree part found for %s (LCSC=%s, Mouser=%s)",
-                          entry.reference, entry.lcsc, entry.mouser)
-        if reporter is None:
+    # Dry-run guard: ensure_parts_exist already recorded CREATE for new
+    # entries. Those have lcsc/mouser SKUs but `find_existing_part` missed
+    # (truly new) → not yet in InvenTree → here they'd fall through into
+    # `missing`. Don't double-report them as FAIL — they ARE the
+    # CREATE entries from the prior step.
+    already_creating: set[str] = set()
+    if reporter is not None:
+        already_creating = {
+            r.target for r in reporter.records
+            if r.category == "Parts" and r.action == "CREATE"
+        }
+
+    for entry in missing:
+        reason = f"no InvenTree match (LCSC={entry.lcsc}, Mouser={entry.mouser})"
+        if reporter is not None:
+            if entry.reference in already_creating:
+                continue  # ensure_parts_exist already recorded this as CREATE
+            reporter.record("FAIL", "Parts", entry.reference, reason)
+        elif collector is not None:
+            log.error("No InvenTree part for %s — %s", entry.reference, reason)
+            collector.add("Parts", entry.reference, reason)
+        else:
+            log.error("No InvenTree part found for %s (LCSC=%s, Mouser=%s)",
+                      entry.reference, entry.lcsc, entry.mouser)
             sys.exit(1)
-        # In dry-run mode, the print_report+exit happens up in main().
+    # In dry-run mode, the print_report+exit happens up in main().
+    # With collector, the summary+exit happens in main() too.
 
 
 # ---------------------------------------------------------------------------
@@ -256,11 +315,54 @@ def create_stencil_part(
 # BOM population
 # ---------------------------------------------------------------------------
 
+def _update_min_stock(
+    entries: list[BomEntry],
+    planned_builds: int,
+) -> None:
+    """Set Part.minimum_stock = max(current, qty × planned_builds) per entry.
+
+    "Higher wins": if the same Part is referenced by another assembly with a
+    higher need, keep the higher value.  Equivalent if planned_builds is 1
+    and the Part already had minimum_stock=qty from a previous run.
+
+    Skips Parts that fail to save() — never raises, never blocks the sync.
+    PCB/Stencil/Assembly Parts are not touched (no BomEntry points at them
+    as a sub-part).
+    """
+    if planned_builds <= 0:
+        log.warning(
+            "Skipping minimum_stock update: planned_builds=%d is non-positive",
+            planned_builds)
+        return
+    for entry in entries:
+        needed = entry.qty * planned_builds
+        for inv_part in entry.inventree_part:
+            # `minimum_stock` is a number on the Part. Some InvenTree versions
+            # store it as int, others as string-coerced numeric; getattr +
+            # int(float(...)) with a default keeps the comparison robust.
+            try:
+                current = int(float(getattr(inv_part, "minimum_stock", 0) or 0))
+            except (TypeError, ValueError):
+                current = 0
+            if needed <= current:
+                continue
+            try:
+                inv_part.save({"minimum_stock": needed})
+                log.info(
+                    "Set minimum_stock=%d on pk=%s (%s × %d builds, was %d)",
+                    needed, inv_part.pk, entry.qty, planned_builds, current)
+            except Exception as exc:
+                log.warning(
+                    "minimum_stock update failed for pk=%s: %s",
+                    inv_part.pk, exc)
+
+
 def populate_bom(
     api: InvenTreeAPI,
     assembly: Part,
     pcb: Part,
     entries: list[BomEntry],
+    planned_builds: int = 0,
 ) -> None:
     """Create BomItems on *assembly*: one for the PCB, one per BomEntry.
 
@@ -268,6 +370,11 @@ def populate_bom(
     the same sub-parts with the same reference designators, the existing
     items are kept and the new creation is skipped.  Lets the workflow
     be re-run safely without producing duplicate BomItems.
+
+    *planned_builds* > 0 triggers a Part.minimum_stock update for every
+    BOM-resolved Part (max with current; higher wins).  Default 0 means
+    "don't touch minimum_stock" — backwards-compat for callers in tests
+    that don't care about stock thresholds.
     """
     existing = BomItem.list(api, part=assembly.pk)
     existing_keys: set[tuple[int, str]] = {
@@ -299,6 +406,9 @@ def populate_bom(
 
     log.info("BOM populated: %d new items, %d skipped (already present)",
              created, skipped)
+
+    if planned_builds > 0:
+        _update_min_stock(entries, planned_builds)
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +443,19 @@ def parse_args() -> argparse.Namespace:
             "Path to a YAML file mapping KiCad symbol names to InvenTree "
             "category hierarchies.  Defaults to the built-in "
             "default_categories.yaml shipped with the package."
+        ),
+    )
+    parser.add_argument(
+        "--planned-builds",
+        dest="planned_builds",
+        type=int,
+        default=10,
+        help=(
+            "Multiplier for Part.minimum_stock: needed = qty_per_PCB × "
+            "planned_builds.  Sets minimum_stock on every BOM-resolved "
+            "Part to make the InvenTree 'Low Stock' page useful as an "
+            "order list.  Higher existing values are preserved (never "
+            "decreased).  Default: 10."
         ),
     )
     parser.add_argument(
@@ -417,13 +540,14 @@ def main() -> None:
             sys.exit(1)
         return  # End of dry-run path
 
-    # Non-dry-run path: original flow continues below (UNCHANGED)
+    # Non-dry-run path: original flow continues below.
+    collector = ErrorCollector()
 
     # Create any parts that don't exist in InvenTree yet
     ensure_parts_exist(api, entries, category_map)
 
     # Match every BOM entry to its InvenTree part via supplier SKU
-    match_supplier_parts(api, entries)
+    match_supplier_parts(api, entries, collector=collector)
 
     pcb_cat      = get_category_by_name(api, PCB_CATEGORY_NAME)
     assembly_cat = get_category_by_name(api, ASSEMBLY_CATEGORY_NAME)
@@ -438,7 +562,7 @@ def main() -> None:
     PartRelated.add_related(api, pcb, stencil)
     log.info("Linked stencil to PCB as related part")
 
-    populate_bom(api, assembly, pcb, entries)
+    populate_bom(api, assembly, pcb, entries, planned_builds=args.planned_builds)
 
     # Cost-report (Backlog #11) — Markdown into $GITHUB_STEP_SUMMARY + assembly.notes
     try:
@@ -448,6 +572,14 @@ def main() -> None:
 
     if args.output_dir:
         attach_kibot_outputs(api, pcb, assembly, stencil, args.output_dir)
+
+    # Summary + exit-code: errors collected during match_supplier_parts above
+    # surface here as a single aggregated report. Partial syncs still create
+    # the PCB / Assembly / BOM (best-effort) — only the per-entry fails count
+    # against the exit-code contract.
+    if collector.has_errors():
+        collector.print_summary()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

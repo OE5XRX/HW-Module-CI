@@ -8,6 +8,8 @@ import re
 from typing import Optional
 
 import requests
+import urllib3.util
+from requests.adapters import HTTPAdapter
 
 from .models import PartData
 
@@ -21,13 +23,53 @@ _IOS_UA = (
 )
 
 
+def _make_retry_session() -> requests.Session:
+    """Build a requests.Session with urllib3 Retry mounted on http(s)://.
+
+    Retries on transient distributor-side failures so a single 502 from
+    LCSC or a Mouser-API hiccup doesn't kill an 80-part marathon-sync:
+
+      total=3              — three retries beyond the initial attempt
+      backoff_factor=1     — urllib3 sleeps backoff_factor * 2^(n-1) before
+                              retry n, with n=1 returning 0. That yields
+                              0s before retry 1, 2s before retry 2, 4s
+                              before retry 3 — the 0/2/4 schedule the spec
+                              calls for. (backoff_factor=2 would give 0/4/8.)
+      status_forcelist     — 429 (rate-limit) + 5xx server errors
+      allowed_methods      — GET (LCSC detail) + POST (LCSC search, Mouser)
+      raise_on_status=False — the urllib3 retry layer does not raise on
+                              the final response; the requests-level
+                              ``resp.raise_for_status()`` call in each
+                              fetcher still handles 4xx/5xx that aren't
+                              in status_forcelist (e.g. 404). Keeping
+                              this False here avoids double-raising
+                              between the two layers.
+
+    Image downloads in client.py.upload_image_from_url do NOT use this
+    session — PerimeterX blocks are not transient and a retry only
+    floods the logs.
+    """
+    session = requests.Session()
+    retry = urllib3.util.Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 class LCSCFetcher:
     """Fetches part data from the LCSC wmsc API."""
 
     _UA = _IOS_UA
 
     def __init__(self):
-        self.session = requests.Session()
+        self.session = _make_retry_session()
         self.session.headers.update({
             "User-Agent": self._UA,
             "Accept-Language": "en-US,en",
@@ -182,6 +224,9 @@ class MouserFetcher:
                 "MOUSER_API_KEY environment variable is not set. "
                 "Export it before running this script."
             )
+        # Retry session so a single Mouser-API hiccup doesn't kill the sync.
+        # Same shape as LCSCFetcher's session via _make_retry_session.
+        self.session = _make_retry_session()
 
     def fetch(self, mouser_sku: str) -> Optional[PartData]:
         """Return PartData for a Mouser SKU, or None on failure."""
@@ -192,7 +237,7 @@ class MouserFetcher:
             }
         }
         try:
-            resp = requests.post(
+            resp = self.session.post(
                 self._URL,
                 params={"apiKey": self.api_key},
                 json=payload,
