@@ -95,6 +95,26 @@ _UNIT_TOKENS = (
     "m", "k", "M",      # bare SI prefixes used for resistors (10k, 1M, 470m)
 )
 
+# KiCad-Symbol-Präfixe, deren kicad_value bewusst generisch ist (typisch:
+# kicad_value == kicad_part == "Conn_02x10_Row_Letter_First" — also der reine
+# Symbol-Name statt eines Bauteil-Identifikators). Bei einem Real-Sync nutzt
+# generate_part_name für diese Klasse den MPN aus PartData als Part-Name,
+# wenn verfügbar; sonst fällt es auf den generischen Symbol-Namen zurück.
+#
+# Hintergrund: zwei physisch verschiedene Connectors (z.B. Stiftleiste vs
+# Buchsenleiste mit derselben Pin-Belegung) teilen denselben KiCad-Symbol-
+# Namen. Ohne diese Disambiguierung würde der name-based Lookup-Fallback in
+# part_manager.ensure_parts_exist sie zu einem InvenTree-Part collapse'n —
+# Stand des Bugs, der die PR-6 motiviert hat.
+#
+# Erweitern nach Bedarf: neue Präfix-Familie ist eine 1-Zeilen-Änderung hier.
+# Bewusst NICHT in default_categories.yaml, weil es eine Symbol-Library-
+# Konvention ist, kein Bauteil-Attribut.
+_GENERIC_SYMBOL_PREFIXES = (
+    "Conn_",
+    "Screw_Terminal_",
+)
+
 
 def _normalize_value(value: str) -> str:
     """Normalize a KiCad value string to a canonical form for part-name generation.
@@ -150,16 +170,43 @@ def _normalize_value(value: str) -> str:
     return out
 
 
-def generate_part_name(kicad_part: str, kicad_value: str, footprint: str) -> str:
+def generate_part_name(
+    kicad_part: str,
+    kicad_value: str,
+    footprint: str,
+    part_data: Optional[PartData] = None,
+) -> str:
     """
     Generate a human-readable InvenTree part name from KiCad fields.
 
+    For structured passive symbols (R, C, C_Polarized, L, L_Iron, Crystal)
+    a value-with-package convention is used: ``R 10k 0805``, ``C 100nF 0805``,
+    ``XTAL 8MHz/20pF``. Value normalization (``_normalize_value``) absorbs
+    Schaltplan-side inconsistencies (10K vs 10k, kΩ vs k, …).
+
+    For everything else — generic KiCad connector symbols
+    (``Conn_*``, ``Screw_Terminal_*``) AND real MPN-style component names
+    (STM32U575CITx, INA226, USBLC6-2SC6) — the ``kicad_value`` is normally
+    passed through as the Part name. When *part_data* is provided AND the
+    ``kicad_part`` starts with one of the ``_GENERIC_SYMBOL_PREFIXES`` AND
+    ``part_data.mpn`` is set, the MPN replaces the generic ``kicad_value``.
+    This prevents physically-distinct connectors that share a KiCad symbol
+    name from collapsing to a single InvenTree Part via the name-based
+    fallback in ``part_manager.ensure_parts_exist``.
+
+    Real MPN-style symbol names (STM32U575CITx) keep their ``kicad_value``
+    even when *part_data.mpn* differs — the schematic-side family-level
+    identifier wins over the supplier-side variant suffix.
+
     Examples:
-      R, '10K', 'R_0805_2012Metric'         → 'R 10k 0805'  (normalized)
-      C, '100 nF', 'C_0805_2012Metric'       → 'C 100nF 0805' (normalized)
-      C_Polarized, '100u / 25V', ...          → 'CP 100u/25V'
-      Crystal, '8MHz / 20pF', ...             → 'XTAL 8MHz/20pF'
-      STM32U575CITx, 'STM32U575CITx', ...    → 'STM32U575CITx' (unchanged)
+      R, '10K', 'R_0805_2012Metric'                       → 'R 10k 0805'
+      C, '100 nF', 'C_0805_2012Metric'                    → 'C 100nF 0805'
+      C_Polarized, '100u / 25V', ...                       → 'CP 100u/25V'
+      Crystal, '8MHz / 20pF', ...                          → 'XTAL 8MHz/20pF'
+      Conn_02x10_..., ..., PartData(mpn='PCN10-20P-2.54DS')→ 'PCN10-20P-2.54DS'
+      Conn_02x10_..., ..., None                            → 'Conn_02x10_...'
+      STM32U575CITx, 'STM32U575CITx', ..., PartData(mpn='STM32U575CIT6')
+                                                           → 'STM32U575CITx'
     """
     # Collapse spaces around '/' and consecutive spaces (compound values).
     val = re.sub(r"\s*/\s*", "/", kicad_value.strip())
@@ -183,6 +230,19 @@ def generate_part_name(kicad_part: str, kicad_value: str, footprint: str) -> str
     elif kicad_part == "Crystal":
         return f"XTAL {val}"
     else:
+        # Generic-Symbol-Klassen: MPN aus part_data nutzen wenn verfügbar.
+        # Schützt vor Name-Kollisionen bei physisch verschiedenen Bauteilen
+        # die ein generisches KiCad-Symbol teilen (Conn_02x10_..., Conn_Coaxial,
+        # Screw_Terminal_..., ...).
+        # Strip-first-then-check: ein whitespace-only MPN ("   ") darf nicht zum
+        # Empty-String-Part-Name werden — der ginge sonst still durch
+        # find_part_by_name (das None auf "" zurückgibt) bis in Part.create
+        # mit name="".
+        if (part_data is not None
+                and kicad_part.startswith(_GENERIC_SYMBOL_PREFIXES)):
+            mpn_stripped = (part_data.mpn or "").strip()
+            if mpn_stripped:
+                return mpn_stripped
         return val
 
 

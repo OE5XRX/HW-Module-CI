@@ -720,6 +720,57 @@ def test_minimum_stock_set_and_preserved(api: InvenTreeAPI) -> None:
     print(f"  PASS  minimum_stock set + preserved (pass1=15, pass2 still 15)")
 
 
+def test_generic_connector_mpn_disambiguation(api: InvenTreeAPI) -> None:
+    """generate_part_name uses MPN from part_data for generic connector symbols.
+
+    PR-6 inserts an MPN-from-part_data path into generate_part_name's
+    else-branch for Conn_*/Screw_Terminal_* symbols. Two physically-distinct
+    connectors that share the KiCad symbol Conn_02x10_Row_Letter_First
+    (Stiftleiste straight vs Buchsenleiste) must produce different InvenTree
+    Part names so the find_part_by_name fallback in ensure_parts_exist
+    doesn't collapse them into a single Part.
+
+    Pure-function test — no server side-effects — but lives in the E2E harness
+    because it documents the integration contract the harness exists to
+    protect. The *api* arg is unused; kept for harness-uniformity.
+    """
+    del api  # unused — pure-function integration check
+    from inventree_sync.categories import generate_part_name
+    from inventree_sync.models import PartData
+
+    sym = "Conn_02x10_Row_Letter_First"
+    fp_a = "PCN10-20P-2.54DS"
+    fp_b = "PCN10C-20S-2.54DS"
+
+    # Without part_data (dry-run path): both collapse to symbol name.
+    no_pd_a = generate_part_name(sym, sym, fp_a)
+    no_pd_b = generate_part_name(sym, sym, fp_b)
+    assert no_pd_a == no_pd_b == sym, (
+        f"dry-run fallback should keep generic symbol name; "
+        f"got {no_pd_a!r}, {no_pd_b!r}")
+
+    # With part_data (real-sync): MPNs disambiguate.
+    pd_a = PartData(mpn="PCN10-20P-2.54DS")
+    pd_b = PartData(mpn="PCN10C-20S-2.54DS")
+    real_a = generate_part_name(sym, sym, fp_a, part_data=pd_a)
+    real_b = generate_part_name(sym, sym, fp_b, part_data=pd_b)
+    assert real_a == "PCN10-20P-2.54DS", f"expected MPN-A, got {real_a!r}"
+    assert real_b == "PCN10C-20S-2.54DS", f"expected MPN-B, got {real_b!r}"
+    assert real_a != real_b, "two distinct MPNs must yield distinct Part names"
+
+    # Non-generic IC: kicad_value still wins even with PartData.mpn.
+    pd_ic = PartData(mpn="STM32U575CIT6")
+    ic_name = generate_part_name(
+        "STM32U575CITx", "STM32U575CITx", "LQFP-48_7x7mm_P0.5mm",
+        part_data=pd_ic,
+    )
+    assert ic_name == "STM32U575CITx", (
+        f"IC name should be kicad_value (STM32U575CITx), not MPN; got {ic_name!r}")
+
+    print(f"  PASS  generic_connector_mpn_disambiguation "
+          f"({real_a!r} vs {real_b!r}, IC={ic_name!r})")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -751,7 +802,8 @@ def main() -> int:
                    test_refresh_idempotent,
                    test_mpn_mfr_dedup,
                    test_value_normalization_in_generated_name,
-                   test_minimum_stock_set_and_preserved):
+                   test_minimum_stock_set_and_preserved,
+                   test_generic_connector_mpn_disambiguation):
             try:
                 tc(api)
             except AssertionError as e:
