@@ -246,9 +246,75 @@ XTAL 8MHz/20pF         Mouser 73-XT49M800-20  ← slash compound
 
 ---
 
+## Modul 6 — PowerBoard v1.0 (zusätzlich)
+
+**Source:** `gh run download 25942310961 --repo OE5XRX/HW-Module-PowerBoard`.
+**Stand:** ✅ EXIT 0, Summary identisch zu v1.1: 20 CREATE + 1 SKIP.
+
+BOM byte-identisch zu v1.1 — Schaltplan-/Bauteilliste hat sich zwischen
+v1.0 und v1.1 nicht verändert (vermutlich nur PCB-Layout-Updates oder
+Doku-Bugfixes). Beim Real-Sync wird PR-5 #13 (MPN+Mfr-Dedup) das alles
+korrekt zu denselben Parts wiederverwenden.
+
+---
+
+## Module 7-11 — alle v0.2-Releases (historisch)
+
+**Strategy:** Workflow-Artifacts für v0.2 waren nach 90 Tagen retentiert.
+GitHub's `gh run rerun`-Limit ist 1 Monat. Lösung: `gh workflow run "Create
+Release Docs" --ref v0.2` — der Trigger erlaubt `workflow_dispatch`, also
+neue Workflow-Runs auf v0.2-Tag.
+
+**Stencil-Image:** v0.2-Releases hatten **keine** Stencil-Generierung in
+der CI. `bom_export.py` wurde ohne `--stencil_image` gerufen — der
+Stencil-Part wird trotzdem als "<Module> SMT Stencil rev 0.2" angelegt
+(image=None ist legal). Bei Real-Sync entstehen damit Fake-Stencil-Parts
+ohne tatsächlichen Stencil. **Diskussionspunkt:** möchten wir die für
+v0.2 wirklich anlegen? Workaround: `--name`-Filter im Marathon-Sync-
+Skript, oder manuelles Aufräumen nach Sync.
+
+### v0.2-Stand pro Modul
+
+| Modul | BOM | CREATE | SKIP | Δ zu v1.x |
+|-------|-----|--------|------|-----------|
+| **PowerBoard v0.2** | 17 | 20 | 1 | identisch zu v1.0/1.1 |
+| **BusBoard v0.2** | 7 | 11 | 0 | identisch zu v1.0 |
+| **CM4Carrier v0.2** | 14 | 18 | 1 | identisch zu v1.0 |
+| **DeviceTester v0.2** | 10 | 14 | 1 | identisch zu v1.0 |
+| **FMTransceiver v0.2** | 33 | 36 | 1 | **deutlich anders** (siehe unten) |
+
+### FMTransceiver v0.2 vs v1.0 — Hardware-Migration
+
+v0.2 → v1.0 ist eine **Plattform-Migration** STM32F302 (Cortex-M4) →
+STM32U575 (Cortex-M33). Konkret im BOM sichtbar:
+
+```
+v0.2 only:                                  v1.0 only:
+  U201 STM32F302CBTx                          U201 STM32U575CITx
+  Q601, Q701 zusätzliche 2N7002 (×3)          Q701 BC847BS (Dual NPN)
+  C501, C601, C701 mehr 10nF Caps             C216 extra 4.7u/X5R Cap
+  R601, R701 mehr 10k Pull-ups                R705/R706 mehr 100k Pull-ups
+                                              R703, R704 47k Pulls
+                                              R301-R304: feinere Pull-Netze
+```
+
+Beim Real-Sync via MPN+Mfr-Dedup landen die als **zwei separate STM32-Parts**
+(unterschiedliche MPNs) — korrekt, weil es echt verschiedene MCUs sind.
+Die gemeinsamen R/C/L-Bauteile teilen sich Parts cross-version.
+
+### Wieder: keine neuen Bug-Befunde
+
+- 0 Crashes
+- 0 FAILs
+- alle EXIT 0
+- DeviceTester v0.2 hat denselben Conn_02x10_Row_Letter_First Stift/Buchse-Konflikt
+  wie v1.0 — wird durch PR-6 (MPN-basierter Name) korrekt aufgelöst beim Real-Sync.
+
+---
+
 ## Querschnittliche Findings
 
-**Summary über 5 Module / 92 BOM-Zeilen:**
+**Summary über 11 Dry-Runs / 192 BOM-Zeilen:**
 - 0 Crashes, 0 echte FAILs, alle EXIT 0.
 - 1 echter Sync-Bug entdeckt (DeviceTester #9).
 - Mehrere Naming-Konsistenz-Beobachtungen.
