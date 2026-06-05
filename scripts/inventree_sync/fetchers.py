@@ -2,6 +2,7 @@
 fetchers.py – Supplier data fetchers for LCSC and Mouser.
 """
 
+import html
 import logging
 import os
 import re
@@ -21,6 +22,39 @@ _IOS_UA = (
     "AppleWebKit/605.1.15 (KHTML, like Gecko) "
     "Version/17.0 Mobile/15E148 Safari/604.1"
 )
+
+
+# Pre-compiled regex for the HTML-tag-strip in _clean_description below.
+# Module-level so it's compiled once per process.
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _clean_description(text: Optional[str]) -> Optional[str]:
+    """Strip HTML tags and decode HTML entities from a supplier description.
+
+    InvenTree's Part.description field rejects strings containing HTML
+    markup with HTTP 400 ("Remove HTML tags from this value"). Both LCSC
+    and Mouser occasionally return descriptions with <b>/<sup>-style tags
+    and/or HTML entities like &reg;, &trade;, &amp;.
+
+    Order matters: ``html.unescape`` runs FIRST so encoded tag-syntax
+    (``&lt;b&gt;``) gets converted to real tags, which are then stripped.
+    The reverse order would leave decoded tag-syntax intact in the output.
+
+    Returns the input unchanged when it is falsy (None, "") so callers
+    don't need to special-case missing supplier fields.
+
+    Examples:
+        >>> _clean_description("SIMPLE SWITCHER&reg; buck regulator")
+        'SIMPLE SWITCHER® buck regulator'
+        >>> _clean_description("<b>10kΩ</b> &plusmn;1%")
+        '10kΩ ±1%'
+        >>> _clean_description("")
+        ''
+    """
+    if not text:
+        return text
+    return _HTML_TAG_RE.sub("", html.unescape(text)).strip()
 
 
 def _make_retry_session() -> requests.Session:
@@ -198,7 +232,7 @@ class LCSCFetcher:
         return PartData(
             mpn=product.get("productModel", ""),
             manufacturer=product.get("brandNameEn", ""),
-            description=product.get("productDescEn", ""),
+            description=_clean_description(product.get("productDescEn", "")),
             image_url=image_url,
             datasheet_url=datasheet,
             lcsc_sku=sku,
@@ -256,8 +290,8 @@ class MouserFetcher:
 
         p = parts[0]
 
-        # Strip HTML tags from description
-        description = re.sub(r"<[^>]+>", "", p.get("Description", ""))
+        # Strip HTML tags + decode entities (shared with LCSC via _clean_description).
+        description = _clean_description(p.get("Description", ""))
 
         # Category
         category_path = []
