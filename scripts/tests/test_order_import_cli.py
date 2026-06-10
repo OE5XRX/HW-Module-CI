@@ -94,3 +94,84 @@ def test_main_returns_nonzero_on_drift(tmp_path, monkeypatch):
         upsert.side_effect = RuntimeError("drift!")
         rc = cli.main(["--lcsc-csv", str(csv_file)])
     assert rc == 1
+
+
+def test_dry_run_instantiates_reporter_and_prints_report(tmp_path, monkeypatch):
+    """--dry-run → DryRunReporter created, ensure_part called with it,
+    print_report invoked, exit 0."""
+    csv_file = tmp_path / "LCSC__WM_1.csv"
+    csv_file.write_text(
+        "LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,"
+        "Package,Description,RoHS,Quantity,Unit Price($),Ext.Price($),"
+        "Estimated lead time (business days),Updated lead time,"
+        "Date Code / Lot No.\n"
+        "C1,MPN1,M1,,0805,desc,YES,5,0.1,0.5,,,\n"
+    )
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    with patch("import_supplier_order.InvenTreeAPI"), \
+         patch("import_supplier_order.LCSCFetcher"), \
+         patch("import_supplier_order.MouserFetcher"), \
+         patch("import_supplier_order.get_or_create_supplier") as gos, \
+         patch("import_supplier_order.get_receive_location") as grl, \
+         patch("import_supplier_order.ensure_part_for_order_line") as epfol, \
+         patch("import_supplier_order.upsert_purchase_order") as upsert, \
+         patch("import_supplier_order.load_category_map", return_value={}), \
+         patch("import_supplier_order.DryRunReporter") as reporter_cls:
+        reporter_instance = MagicMock()
+        reporter_instance.records = []
+        reporter_cls.return_value = reporter_instance
+        gos.return_value = MagicMock(pk=1)
+        grl.return_value = MagicMock(pk=7)
+        # Dry-run path returns (None, None) per Task 1
+        epfol.return_value = (None, None)
+        upsert.return_value = MagicMock(
+            action="DRY_RUN_CREATE", po_reference="WM",
+            lines_added=1, lines_updated=0, lines_deleted=0,
+        )
+        rc = cli.main(["--lcsc-csv", str(csv_file), "--dry-run"])
+
+    assert rc == 0
+    reporter_cls.assert_called_once_with()
+    reporter_instance.print_report.assert_called_once()
+    # ensure_part_for_order_line must receive the reporter as kwarg
+    assert epfol.call_count == 1
+    assert epfol.call_args.kwargs.get("reporter") is reporter_instance
+
+
+def test_real_run_does_not_instantiate_reporter(tmp_path, monkeypatch):
+    """Without --dry-run, no DryRunReporter is created."""
+    csv_file = tmp_path / "LCSC__WM_1.csv"
+    csv_file.write_text(
+        "LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,"
+        "Package,Description,RoHS,Quantity,Unit Price($),Ext.Price($),"
+        "Estimated lead time (business days),Updated lead time,"
+        "Date Code / Lot No.\n"
+        "C1,MPN1,M1,,0805,desc,YES,5,0.1,0.5,,,\n"
+    )
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    with patch("import_supplier_order.InvenTreeAPI"), \
+         patch("import_supplier_order.LCSCFetcher"), \
+         patch("import_supplier_order.MouserFetcher"), \
+         patch("import_supplier_order.get_or_create_supplier") as gos, \
+         patch("import_supplier_order.get_receive_location") as grl, \
+         patch("import_supplier_order.ensure_part_for_order_line") as epfol, \
+         patch("import_supplier_order.upsert_purchase_order") as upsert, \
+         patch("import_supplier_order.load_category_map", return_value={}), \
+         patch("import_supplier_order.DryRunReporter") as reporter_cls:
+        gos.return_value = MagicMock(pk=1)
+        grl.return_value = MagicMock(pk=7)
+        epfol.return_value = (MagicMock(pk=100), MagicMock(pk=200, SKU="C1"))
+        upsert.return_value = MagicMock(
+            action="CREATED", po_reference="WM",
+            lines_added=1, lines_updated=0, lines_deleted=0,
+        )
+        rc = cli.main(["--lcsc-csv", str(csv_file)])
+
+    assert rc == 0
+    reporter_cls.assert_not_called()
+    # ensure_part_for_order_line called WITHOUT reporter kwarg (or with None)
+    assert epfol.call_args.kwargs.get("reporter") is None

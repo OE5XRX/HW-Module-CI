@@ -23,6 +23,7 @@ from inventree.api import InvenTreeAPI
 
 from inventree_sync.categories import load_category_map
 from inventree_sync.client import get_or_create_supplier
+from inventree_sync.dry_run import DryRunReporter
 from inventree_sync.fetchers import LCSCFetcher, MouserFetcher
 from inventree_sync.order_import import (
     SupplierOrder,
@@ -93,6 +94,7 @@ def _import_one_order(
     category_map: dict,
     receive_location,
     dry_run: bool,
+    reporter: Optional[DryRunReporter] = None,
 ) -> int:
     """Process one parsed SupplierOrder. Returns exit-code (0 ok, 1 drift).
 
@@ -101,6 +103,12 @@ def _import_one_order(
     the side they need. The side matching ``order.supplier_name`` MUST be
     non-None — ``ensure_part_for_order_line`` enforces that at the call
     site of every line.
+
+    *reporter* is set when ``--dry-run`` is active. It's threaded into
+    ``ensure_part_for_order_line`` so the resolution chain records
+    decisions instead of executing writes. PO upsert decisions are
+    recorded here using the ``UpsertReport.action`` from
+    ``upsert_purchase_order`` (which is dry-run-aware on its own).
     """
     supplier_kind = order.supplier_name  # "LCSC" or "Mouser"
     supplier = lcsc_supplier if supplier_kind == "LCSC" else mouser_supplier
@@ -116,12 +124,17 @@ def _import_one_order(
                 lcsc_fetcher, mouser_fetcher,
                 lcsc_supplier, mouser_supplier,
                 category_map,
+                reporter=reporter,
             )
         except Exception as exc:
             log.error("Failed to resolve %s line %s: %s",
                       supplier_kind, line.sku, exc)
             return 1
-        sku_to_sp[line.sku] = sp
+        # Real-run path: sp is a SupplierPart, add it to the mapping.
+        # Dry-run path: sp is None, skip — upsert_purchase_order short-
+        # circuits before touching the mapping in all three paths.
+        if sp is not None:
+            sku_to_sp[line.sku] = sp
 
     try:
         report = upsert_purchase_order(
@@ -134,11 +147,23 @@ def _import_one_order(
         log.error("%s", exc)
         return 1
 
-    log.info(
-        "%s PO %s — added=%d updated=%d deleted=%d",
-        report.action, report.po_reference,
-        report.lines_added, report.lines_updated, report.lines_deleted,
-    )
+    if reporter is not None:
+        # In dry-run, fold the PO decision into the report under a stable
+        # category name. Action prefix "DRY_RUN_" is stripped so the
+        # printed report reads cleanly.
+        action_clean = report.action.removeprefix("DRY_RUN_")
+        action_kind = "CREATE" if action_clean in ("CREATED", "RECONCILED", "CREATE", "RECONCILE") else "REUSE"
+        reporter.record(
+            action_kind, "PurchaseOrder", order.reference,
+            f"{action_clean} added={report.lines_added} "
+            f"updated={report.lines_updated} deleted={report.lines_deleted}",
+        )
+    else:
+        log.info(
+            "%s PO %s — added=%d updated=%d deleted=%d",
+            report.action, report.po_reference,
+            report.lines_added, report.lines_updated, report.lines_deleted,
+        )
     return 0
 
 
@@ -148,6 +173,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     log.info(
         "Importing supplier-order parts without KiCad context — "
         "categories will fall back to supplier-provided or 'Miscellaneous'.")
+
+    reporter = DryRunReporter() if args.dry_run else None
 
     api = InvenTreeAPI()
     # Only instantiate the suppliers/fetchers actually needed — avoids
@@ -183,6 +210,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 api, order, lcsc_fetcher, mouser_fetcher,
                 lcsc_supplier, mouser_supplier, category_map,
                 receive_location, args.dry_run,
+                reporter=reporter,
             )
     if args.mouser_xls:
         try:
@@ -195,7 +223,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 api, order, lcsc_fetcher, mouser_fetcher,
                 lcsc_supplier, mouser_supplier, category_map,
                 receive_location, args.dry_run,
+                reporter=reporter,
             )
+    if reporter is not None:
+        reporter.print_report(title="Supplier Order Import (dry run)")
     return rc
 
 
