@@ -16,7 +16,9 @@ from __future__ import annotations
 import csv
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 
 @dataclass
@@ -99,3 +101,120 @@ def parse_lcsc_csv(path: Path) -> SupplierOrder:
         currency="USD",
         lines=lines,
     )
+
+
+_MOUSER_DATE_RE = re.compile(r"^(\d{2})-([A-Za-z]{3})-(\d{2})$")
+_MOUSER_MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+
+
+def _parse_mouser_price(price_str: Optional[str]) -> float:
+    """Parse a Mouser-style price cell ("€ 0,381", "$ 1.23", "0.0074").
+
+    Mirrors the format logic in ``fetchers.MouserFetcher._parse_price`` but
+    accepts the wider variety of strings the XLS export emits (with or
+    without currency glyph, sometimes a non-breaking space).  Returns 0.0
+    on empty/None input.
+    """
+    if price_str is None:
+        return 0.0
+    cleaned = re.sub(r"[^\d,.]", "", str(price_str).strip())
+    if not cleaned:
+        return 0.0
+    last_comma = cleaned.rfind(",")
+    last_dot = cleaned.rfind(".")
+    if last_comma > last_dot:
+        # European format: 0,381 or 1.234,56
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    else:
+        cleaned = cleaned.replace(",", "")  # remove US thousands separators
+    return float(cleaned)
+
+
+def _parse_mouser_date(date_str: Optional[str]) -> Optional[str]:
+    """Convert a Mouser XLS date like "07-Jul-25" to ISO "2025-07-07".
+
+    Returns None for empty / unrecognised strings — callers tolerate the
+    missing date and proceed.
+    """
+    if not date_str:
+        return None
+    m = _MOUSER_DATE_RE.match(date_str.strip())
+    if not m:
+        return None
+    day_s, mon_s, yr_s = m.groups()
+    month = _MOUSER_MONTHS.get(mon_s.capitalize())
+    if not month:
+        return None
+    try:
+        year = 2000 + int(yr_s)
+        day = int(day_s)
+        return datetime(year, month, day).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _rows_to_mouser_order(rows: list[dict]) -> SupplierOrder:
+    """Pure transformation: list of row-dicts → SupplierOrder.
+
+    Each row-dict carries the column names from the Mouser XLS export
+    (``"Sales Order No:"``, ``"Mouser No:"``, …) as keys.  Empty rows
+    (no Mouser-No) are skipped — Excel sometimes pads with blank lines.
+    """
+    reference = "mouser-unknown"
+    order_date: Optional[str] = None
+    lines: list[SupplierOrderLine] = []
+    for row in rows:
+        sku = str(row.get("Mouser No:") or "").strip()
+        if not sku:
+            continue
+        if reference == "mouser-unknown":
+            sales_no = str(row.get("Sales Order No:") or "").strip()
+            if sales_no:
+                reference = sales_no
+        if order_date is None:
+            order_date = _parse_mouser_date(str(row.get("Order Date:") or "").strip())
+        lines.append(SupplierOrderLine(
+            sku=sku,
+            qty=int(float(str(row.get("Order Qty.") or "0").strip() or "0")),
+            unit_price=_parse_mouser_price(row.get("Price (EUR)")),
+            currency="EUR",
+            mpn=str(row.get("Mfr. No:") or "").strip(),
+            mfr_name="",  # not in file; populated later by MouserFetcher
+            description=str(row.get("Desc.:") or "").strip(),
+            package="",   # Mouser XLS has no dedicated package column
+        ))
+    return SupplierOrder(
+        supplier_name="Mouser",
+        reference=reference,
+        order_date=order_date,
+        currency="EUR",
+        lines=lines,
+    )
+
+
+def _read_mouser_rows(path: Path) -> list[dict]:
+    """Read a Mouser .xls into a list of row-dicts keyed by header name.
+
+    Uses xlrd 2.0 which supports legacy BIFF .xls (Mouser's export format).
+    Sheet 0 is assumed to be ``Order Details`` — Mouser hasn't varied this
+    in years.  Row 0 is the header.
+    """
+    import xlrd  # lazy import so test_*_parsers.py doesn't need xlrd installed
+    book = xlrd.open_workbook(str(path))
+    sheet = book.sheet_by_index(0)
+    if sheet.nrows < 2:
+        return []
+    headers = [str(c).strip() for c in sheet.row_values(0)]
+    out: list[dict] = []
+    for r in range(1, sheet.nrows):
+        cells = sheet.row_values(r)
+        out.append({headers[i]: cells[i] for i in range(min(len(headers), len(cells)))})
+    return out
+
+
+def parse_mouser_xls(path: Path) -> SupplierOrder:
+    """Parse a Mouser-XLS order file into a SupplierOrder."""
+    return _rows_to_mouser_order(_read_mouser_rows(path))
