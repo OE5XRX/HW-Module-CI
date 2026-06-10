@@ -802,12 +802,20 @@ def upsert_purchase_order(
     if status >= _STATUS_COMPLETE:
         # Pfad C
         if diff.is_empty:
-            logger.info("PO %s already COMPLETE and matches file — no-op.",
-                        order.reference)
+            # Use existing_ref (server-side, e.g. PO-0001) so operators
+            # cross-checking the log against the InvenTree UI find the
+            # right PO. supplier_reference is the cross-link to the
+            # source file (Mouser/LCSC order ID).
+            logger.info(
+                "PO %s (supplier_reference=%s) already COMPLETE and "
+                "matches file — no-op.",
+                existing_ref, order.reference,
+            )
             return UpsertReport(action="IN_SYNC", po_reference=existing_ref)
         raise RuntimeError(
-            f"PO {order.reference} ({order.supplier_name}) is COMPLETE but "
-            f"differs from the source file:\n"
+            f"PO {existing_ref} (supplier_reference={order.reference}, "
+            f"{order.supplier_name}) is COMPLETE but differs from the "
+            f"source file:\n"
             f"{diff.format_report()}\n"
             f"Resolve manually in the InvenTree UI (or delete the PO + "
             f"associated StockItems) and re-run."
@@ -826,10 +834,11 @@ def upsert_purchase_order(
             for li in partial
         )
         raise RuntimeError(
-            f"PO {order.reference} ({order.supplier_name}) has line item(s) "
-            f"with received stock that the source file no longer lists: "
-            f"{details}. Resolve manually in the InvenTree UI (delete the "
-            f"StockItems and the line, or restore the line in the source file)."
+            f"PO {existing_ref} (supplier_reference={order.reference}, "
+            f"{order.supplier_name}) has line item(s) with received stock "
+            f"that the source file no longer lists: {details}. Resolve "
+            f"manually in the InvenTree UI (delete the StockItems and "
+            f"the line, or restore the line in the source file)."
         )
 
     if dry_run:

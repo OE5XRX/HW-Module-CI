@@ -195,6 +195,7 @@ def test_path_b_refuses_to_delete_partially_received_line():
     li_c.purchase_price = 0.5; li_c.part = 103; li_c.received = 2  # partial
 
     existing_po = _po(status=20, lines=[li_a, li_c], supplier_reference="X")
+    existing_po.reference = "PO-0099"  # server-side InvenTree reference
 
     with patch("inventree_sync.order_import.PurchaseOrder") as PO:
         PO.list.return_value = [existing_po]
@@ -210,6 +211,10 @@ def test_path_b_refuses_to_delete_partially_received_line():
     msg = str(exc.value)
     assert "C" in msg
     assert "received=2" in msg
+    # Operator-facing identifier is the InvenTree-side reference;
+    # supplier_reference is included as a cross-link to the source file.
+    assert "PO-0099" in msg
+    assert "supplier_reference=X" in msg
     li_c.delete.assert_not_called()
     existing_po.receiveAll.assert_not_called()
 
@@ -279,6 +284,7 @@ def test_path_c_drift_raises_runtime_error():
     li_a.purchase_price = 1.0; li_a.part = 101
 
     existing_po = _po(status=30, lines=[li_a])  # missing B too
+    existing_po.reference = "PO-0005"  # server-side InvenTree reference
 
     with patch("inventree_sync.order_import.PurchaseOrder") as PO:
         PO.list.return_value = [existing_po]
@@ -292,7 +298,12 @@ def test_path_c_drift_raises_runtime_error():
             )
 
     msg = str(exc.value)
-    assert "275708282" in msg
+    # Primary identifier in operator-facing message is the InvenTree-side
+    # reference so it can be pasted into the UI search.
+    assert "PO-0005" in msg
+    # supplier_reference (= source file Mouser/LCSC order ID) is also
+    # present as a cross-link to the source data.
+    assert "supplier_reference=275708282" in msg
     assert "ADD" in msg or "UPDATE" in msg
     existing_po.addLineItem.assert_not_called()
     li_a.save.assert_not_called()
