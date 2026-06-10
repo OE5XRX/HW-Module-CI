@@ -594,6 +594,20 @@ def upsert_purchase_order(
     """
     sku_to_sp_pk = {sku: sp.pk for sku, sp in sku_to_supplier_part.items()}
 
+    # Dedup file lines by SKU (last occurrence wins) — matches the
+    # `by_sku_file = {fl.sku: fl for fl in file_lines}` semantics of
+    # compute_po_line_diff. Without this, Pfad A would create duplicate
+    # PO line items with the same `reference`, which Pfad B/C diff would
+    # then silently ignore (leaving them un-reconcilable on re-run).
+    deduped_lines = list({line.sku: line for line in order.lines}.values())
+    if len(deduped_lines) < len(order.lines):
+        logger.warning(
+            "Order %s has %d duplicate SKU rows; deduplicated to %d (last wins).",
+            order.reference,
+            len(order.lines) - len(deduped_lines),
+            len(deduped_lines),
+        )
+
     existing = _find_po(api, supplier.pk, order.reference)
 
     if existing is None:
@@ -601,7 +615,7 @@ def upsert_purchase_order(
         if dry_run:
             return UpsertReport(
                 action="DRY_RUN_CREATE", po_reference=order.reference,
-                lines_added=len(order.lines),
+                lines_added=len(deduped_lines),
             )
         po = PurchaseOrder.create(api, {
             "supplier": supplier.pk,
@@ -609,7 +623,7 @@ def upsert_purchase_order(
             "description": f"Imported from {order.supplier_name} order {order.reference}",
             **({"target_date": order.order_date} if order.order_date else {}),
         })
-        for line in order.lines:
+        for line in deduped_lines:
             sp = sku_to_supplier_part[line.sku]
             po.addLineItem(
                 part=sp.pk,
@@ -622,12 +636,12 @@ def upsert_purchase_order(
         po.receiveAll(location=receive_location.pk, status=_STOCK_STATUS_OK)
         return UpsertReport(
             action="CREATED", po_reference=order.reference,
-            lines_added=len(order.lines),
+            lines_added=len(deduped_lines),
         )
 
     status = int(getattr(existing, "status", 0))
     existing_lines = list(existing.getLineItems())
-    diff = compute_po_line_diff(order.lines, existing_lines, sku_to_sp_pk)
+    diff = compute_po_line_diff(deduped_lines, existing_lines, sku_to_sp_pk)
 
     if status >= _STATUS_COMPLETE:
         # Pfad C

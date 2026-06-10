@@ -311,3 +311,69 @@ def test_dry_run_paths_no_writes():
     PO.create.assert_not_called()
     assert report.action == "DRY_RUN_CREATE"
     assert report.lines_added == 2
+
+
+def test_path_a_dedups_duplicate_sku_rows_last_wins():
+    """Duplicate SKUs in the file must collapse to one PO LineItem.
+
+    Otherwise compute_po_line_diff would silently ignore the surplus
+    items on a later reconciliation run, leaving them un-reconcilable
+    (Copilot Round 3 finding).
+    """
+    order = SupplierOrder(
+        supplier_name="Mouser", reference="275708282",
+        order_date=None, currency="EUR",
+        # Same SKU "A" twice with conflicting qty/price: last wins.
+        lines=[_line("A", 10, 1.0), _line("A", 99, 9.9), _line("B", 5, 2.0)],
+    )
+    supplier = MagicMock(); supplier.pk = 1; supplier.name = "Mouser"
+    sp_a = _supplier_part(pk=101, sku="A")
+    sp_b = _supplier_part(pk=102, sku="B")
+    new_po = _po(status=10)
+    new_po.addLineItem.return_value = MagicMock()
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO:
+        PO.list.return_value = []
+        PO.create.return_value = new_po
+        report = upsert_purchase_order(
+            api=MagicMock(),
+            order=order,
+            supplier=supplier,
+            sku_to_supplier_part={"A": sp_a, "B": sp_b},
+            receive_location=MagicMock(pk=7),
+        )
+
+    # Exactly two addLineItem calls — one per unique SKU
+    assert new_po.addLineItem.call_count == 2
+    calls = new_po.addLineItem.call_args_list
+    skus_added = {c.kwargs["reference"] for c in calls}
+    assert skus_added == {"A", "B"}
+    # Last-wins: A is added with qty=99 / price=9.9, not the first row's 10/1.0
+    a_call = next(c for c in calls if c.kwargs["reference"] == "A")
+    assert a_call.kwargs["quantity"] == 99
+    assert a_call.kwargs["purchase_price"] == 9.9
+    assert report.lines_added == 2
+
+
+def test_path_a_dry_run_dedup_reports_unique_count():
+    """Dry-run report's lines_added must reflect the deduped count, not raw rows."""
+    order = SupplierOrder(
+        supplier_name="Mouser", reference="X",
+        order_date=None, currency="EUR",
+        lines=[_line("A", 1, 0.1), _line("A", 2, 0.2)],  # duplicate SKU
+    )
+    sp_a = _supplier_part(pk=101, sku="A")
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO:
+        PO.list.return_value = []
+        report = upsert_purchase_order(
+            api=MagicMock(),
+            order=order,
+            supplier=MagicMock(pk=1),
+            sku_to_supplier_part={"A": sp_a},
+            receive_location=MagicMock(pk=7),
+            dry_run=True,
+        )
+
+    assert report.action == "DRY_RUN_CREATE"
+    assert report.lines_added == 1  # deduped, not 2

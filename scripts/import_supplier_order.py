@@ -67,8 +67,12 @@ def _suppress_category_warning() -> None:
     drowning out actionable logs. We expect empty kicad_part for supplier
     imports — that's by design.
 
-    Mutates the LogRecord level rather than dropping it, so the message
-    stays visible under `--log-level DEBUG` for troubleshooting.
+    Mutates the LogRecord level rather than dropping it, so the record
+    stays in the stream as DEBUG. The CLI configures the root handler at
+    INFO so the message is hidden by default; lifting it requires reaching
+    in via ``logging.getLogger().setLevel(logging.DEBUG)`` (e.g. from a
+    REPL session that imports the script as a module). No CLI flag exposes
+    this — the WARNING is purely noise during the supplier-import flow.
     """
     class _F(logging.Filter):
         def filter(self, record):
