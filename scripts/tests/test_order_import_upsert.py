@@ -377,3 +377,57 @@ def test_path_a_dry_run_dedup_reports_unique_count():
 
     assert report.action == "DRY_RUN_CREATE"
     assert report.lines_added == 1  # deduped, not 2
+
+
+# ---------------------------------------------------------------------------
+# Server-side reference auto-assignment (PR fix/use-supplier-reference)
+# ---------------------------------------------------------------------------
+
+import pytest as _pytest_for_next_ref  # avoid shadow if pytest already imported
+
+
+def test_next_po_reference_reads_default_from_options():
+    """OPTIONS /api/order/po/ → actions.POST.reference.default is the next sequence value."""
+    from inventree_sync.order_import import _next_po_reference
+
+    api = MagicMock()
+    resp = MagicMock()
+    resp.json.return_value = {
+        "actions": {
+            "POST": {
+                "reference": {"default": "PO-0006"},
+            },
+        },
+    }
+    api.request.return_value = resp
+
+    result = _next_po_reference(api)
+
+    assert result == "PO-0006"
+    api.request.assert_called_once()
+    args, kwargs = api.request.call_args
+    assert kwargs.get("method") == "OPTIONS"
+
+
+def test_next_po_reference_raises_when_default_missing():
+    """Missing nested actions.POST.reference.default → RuntimeError with context."""
+    from inventree_sync.order_import import _next_po_reference
+
+    api = MagicMock()
+    resp = MagicMock()
+    resp.json.return_value = {"actions": {"POST": {}}}
+    api.request.return_value = resp
+
+    with _pytest_for_next_ref.raises(RuntimeError, match="reference"):
+        _next_po_reference(api)
+
+
+def test_next_po_reference_raises_when_options_request_fails():
+    """Network/HTTP failure on OPTIONS → RuntimeError, not a silent fallback."""
+    from inventree_sync.order_import import _next_po_reference
+
+    api = MagicMock()
+    api.request.side_effect = ConnectionError("server unreachable")
+
+    with _pytest_for_next_ref.raises(RuntimeError, match="OPTIONS"):
+        _next_po_reference(api)

@@ -619,6 +619,30 @@ class UpsertReport:
     lines_deleted: int = 0
 
 
+def _next_po_reference(api: InvenTreeAPI) -> str:
+    """Read the next valid PurchaseOrder.reference from the server.
+
+    InvenTree's OPTIONS response for /api/order/po/ includes a computed
+    ``actions.POST.reference.default`` that is the next reference matching
+    the server's configured pattern (e.g. ``"PO-0006"`` for the default
+    ``PO-{ref:04d}`` pattern). This is the same mechanism the React UI
+    uses to pre-fill the Create-PO form.
+
+    Raises RuntimeError if the OPTIONS response is missing the field or
+    the request fails — the importer can't reliably create POs without
+    knowing the next valid reference, so we fail loud rather than guess.
+    """
+    try:
+        resp = api.request(PurchaseOrder.URL, method="OPTIONS")
+        body = resp.json()
+        return body["actions"]["POST"]["reference"]["default"]
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to read next PurchaseOrder.reference from "
+            f"OPTIONS {PurchaseOrder.URL}: {exc}"
+        ) from exc
+
+
 def _find_po(api: InvenTreeAPI, supplier_pk: int, reference: str):
     matches = PurchaseOrder.list(api, supplier=supplier_pk, reference=reference)
     for po in matches:
