@@ -61,6 +61,24 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return args
 
 
+def _first_line(text: object) -> str:
+    """Collapse *text* to its first non-empty line.
+
+    ``DryRunReporter.print_report()`` emits each record on a single line; an
+    exception message that spans multiple lines (e.g. the Pfad-C drift report
+    from ``upsert_purchase_order`` which includes ADD/UPDATE/REMOVE rows on
+    separate lines, or a traceback-style message) would otherwise corrupt the
+    column layout. The full message is still logged via ``log.error("%s", exc)``
+    so no information is lost from the operator's perspective — only the
+    short summary the reporter records is single-line.
+    """
+    for line in str(text).splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
 def _suppress_category_warning() -> None:
     """Demote the 'KiCad symbol "" not in map' WARNING to DEBUG.
 
@@ -136,7 +154,7 @@ def _import_one_order(
             if reporter is not None:
                 reporter.record(
                     "FAIL", "Parts", line.sku,
-                    f"resolution failed: {exc}",
+                    f"resolution failed: {_first_line(exc)}",
                 )
             return 1
         # Real-run path: sp is a SupplierPart, add it to the mapping.
@@ -157,7 +175,7 @@ def _import_one_order(
         if reporter is not None:
             reporter.record(
                 "FAIL", "PurchaseOrder", order.reference,
-                f"upsert failed: {exc}",
+                f"upsert failed: {_first_line(exc)}",
             )
         return 1
 
@@ -221,7 +239,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             if reporter is not None:
                 reporter.record(
                     "FAIL", "Parse", args.lcsc_csv,
-                    f"LCSC parse failed: {exc}",
+                    f"LCSC parse failed: {_first_line(exc)}",
                 )
             rc |= 1
         else:
@@ -239,7 +257,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             if reporter is not None:
                 reporter.record(
                     "FAIL", "Parse", args.mouser_xls,
-                    f"Mouser parse failed: {exc}",
+                    f"Mouser parse failed: {_first_line(exc)}",
                 )
             rc |= 1
         else:

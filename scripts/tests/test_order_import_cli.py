@@ -336,6 +336,25 @@ def test_dry_run_resolution_exception_records_fail(tmp_path, monkeypatch):
     reporter_instance.print_report.assert_called_once()
 
 
+def test_dry_run_multiline_exception_collapsed_to_single_line():
+    """Multi-line exception messages must be collapsed before reporter.record.
+
+    DryRunReporter.print_report() emits each record on a single line; the
+    Pfad C drift report from upsert_purchase_order spans multiple lines,
+    which would otherwise corrupt the column layout.
+    """
+    assert cli._first_line("simple") == "simple"
+    assert cli._first_line("") == ""
+    assert cli._first_line("\n  \n  first\nsecond\nthird") == "first"
+    assert cli._first_line(
+        "PO 275708282 (Mouser) is COMPLETE but differs from file:\n"
+        "  ADD     576-XXX qty=5\n"
+        "  REMOVE  595-YYY qty=10"
+    ) == "PO 275708282 (Mouser) is COMPLETE but differs from file:"
+    # Exception object → str() handled
+    assert cli._first_line(RuntimeError("line1\nline2")) == "line1"
+
+
 def test_dry_run_upsert_runtime_error_records_fail(tmp_path, monkeypatch):
     """RuntimeError from upsert_purchase_order in dry-run mode records FAIL."""
     csv_file = tmp_path / "LCSC__WM_1.csv"
@@ -373,6 +392,54 @@ def test_dry_run_upsert_runtime_error_records_fail(tmp_path, monkeypatch):
         "upsert failed: drift!",
     )
     reporter_instance.print_report.assert_called_once()
+
+
+def test_dry_run_multiline_upsert_error_recorded_as_single_line(tmp_path, monkeypatch):
+    """Realistic Pfad-C drift RuntimeError (multi-line diff) must collapse
+    in the FAIL record so the print_report column layout survives."""
+    csv_file = tmp_path / "LCSC__WM_1.csv"
+    csv_file.write_text(
+        "LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,"
+        "Package,Description,RoHS,Quantity,Unit Price($),Ext.Price($),"
+        "Estimated lead time (business days),Updated lead time,"
+        "Date Code / Lot No.\n"
+        "C1,MPN1,M1,,0805,desc,YES,5,0.1,0.5,,,\n"
+    )
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    drift_msg = (
+        "PO WM (LCSC) is COMPLETE but differs from the source file:\n"
+        "  ADD     576-XXX qty=5\n"
+        "  UPDATE  C1 qty 5→10\n"
+        "Resolve manually in the InvenTree UI and re-run."
+    )
+    with patch("import_supplier_order.InvenTreeAPI"), \
+         patch("import_supplier_order.LCSCFetcher"), \
+         patch("import_supplier_order.MouserFetcher"), \
+         patch("import_supplier_order.get_or_create_supplier") as gos, \
+         patch("import_supplier_order.get_receive_location") as grl, \
+         patch("import_supplier_order.ensure_part_for_order_line") as epfol, \
+         patch("import_supplier_order.upsert_purchase_order") as upsert, \
+         patch("import_supplier_order.load_category_map", return_value={}), \
+         patch("import_supplier_order.DryRunReporter") as reporter_cls:
+        reporter_instance = MagicMock()
+        reporter_instance.records = []
+        reporter_cls.return_value = reporter_instance
+        gos.return_value = MagicMock(pk=1)
+        grl.return_value = MagicMock(pk=7)
+        epfol.return_value = (None, None)
+        upsert.side_effect = RuntimeError(drift_msg)
+        rc = cli.main(["--lcsc-csv", str(csv_file), "--dry-run"])
+
+    assert rc == 1
+    record_call = reporter_instance.record.call_args
+    detail = record_call.args[3]
+    # No newlines in the recorded detail
+    assert "\n" not in detail
+    # First-line was preserved as the summary
+    assert detail.startswith("upsert failed: PO WM (LCSC) is COMPLETE")
+    assert "ADD" not in detail and "UPDATE" not in detail
 
 
 def test_dry_run_parse_exception_records_fail(tmp_path, monkeypatch):
