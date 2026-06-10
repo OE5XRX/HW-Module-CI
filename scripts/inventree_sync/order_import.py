@@ -263,7 +263,11 @@ def get_receive_location(api: InvenTreeAPI, name: str) -> StockLocation:
             if loc.name == name:
                 return loc
     except Exception as exc:
-        logger.warning("StockLocation lookup for %r failed: %s", name, exc)
+        logger.warning(
+            "StockLocation lookup for %r failed (%s: %s); "
+            "falling back to top-level location.",
+            name, type(exc).__name__, exc,
+        )
 
     try:
         all_locs = StockLocation.list(api)
@@ -409,9 +413,6 @@ def ensure_part_for_order_line(
     return created, _lookup_supplier_part(api, line.sku)
 
 
-_PRICE_EPSILON = 1e-6  # tolerance for float price comparison
-
-
 @dataclass
 class LineItemAction:
     """An update operation against an existing PurchaseOrderLineItem."""
@@ -522,10 +523,14 @@ def compute_po_line_diff(
     return POLineDiff(to_add=to_add, to_update=to_update, to_delete=to_delete)
 
 
+# Module-private numeric constants used by the upsert/diff machinery.
+# Grouped here so the InvenTree status codes and the float-comparison
+# tolerance live in one place.
 _STATUS_PENDING = 10
 _STATUS_PLACED = 20
 _STATUS_COMPLETE = 30
 _STOCK_STATUS_OK = 10  # InvenTree StockItem status code "OK"
+_PRICE_EPSILON = 1e-6  # tolerance for float price comparison
 
 
 @dataclass

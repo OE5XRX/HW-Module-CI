@@ -148,19 +148,29 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     rc = 0
     if args.lcsc_csv:
-        order = parse_lcsc_csv(Path(args.lcsc_csv))
-        rc |= _import_one_order(
-            api, order, lcsc_fetcher, mouser_fetcher,
-            lcsc_supplier, mouser_supplier, category_map,
-            receive_location, args.dry_run,
-        )
+        try:
+            order = parse_lcsc_csv(Path(args.lcsc_csv))
+        except Exception as exc:
+            log.error("Failed to parse LCSC file %s: %s", args.lcsc_csv, exc)
+            rc |= 1
+        else:
+            rc |= _import_one_order(
+                api, order, lcsc_fetcher, mouser_fetcher,
+                lcsc_supplier, mouser_supplier, category_map,
+                receive_location, args.dry_run,
+            )
     if args.mouser_xls:
-        order = parse_mouser_xls(Path(args.mouser_xls))
-        rc |= _import_one_order(
-            api, order, lcsc_fetcher, mouser_fetcher,
-            lcsc_supplier, mouser_supplier, category_map,
-            receive_location, args.dry_run,
-        )
+        try:
+            order = parse_mouser_xls(Path(args.mouser_xls))
+        except Exception as exc:
+            log.error("Failed to parse Mouser file %s: %s", args.mouser_xls, exc)
+            rc |= 1
+        else:
+            rc |= _import_one_order(
+                api, order, lcsc_fetcher, mouser_fetcher,
+                lcsc_supplier, mouser_supplier, category_map,
+                receive_location, args.dry_run,
+            )
     return rc
 
 
