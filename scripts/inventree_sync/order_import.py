@@ -611,7 +611,14 @@ _PRICE_EPSILON = 1e-6  # tolerance for float price comparison
 
 @dataclass
 class UpsertReport:
-    """Result of upsert_purchase_order — used by the CLI for summary print."""
+    """Result of upsert_purchase_order — used by the CLI for summary print.
+
+    *po_reference* holds the InvenTree PurchaseOrder.reference — i.e. the
+    server-assigned sequence value (e.g. ``"PO-0006"``), not the supplier-
+    side order ID (which lives in ``PurchaseOrder.supplier_reference``).
+    For dry-run Pfad A this is ``"(server-assigned)"`` because we skip
+    the OPTIONS probe in dry-run mode (the value mutates between runs).
+    """
     action: str               # CREATED | RECONCILED | IN_SYNC | DRY_RUN_*
     po_reference: str
     lines_added: int = 0
@@ -731,13 +738,19 @@ def upsert_purchase_order(
     if existing is None:
         # Pfad A
         if dry_run:
+            # Dry-run: skip the OPTIONS probe. The next reference value
+            # would be reported but mutates between runs (each real POST
+            # advances the sequence). "(server-assigned)" is honest about
+            # what the operator will see in the InvenTree UI.
             return UpsertReport(
-                action="DRY_RUN_CREATE", po_reference=order.reference,
+                action="DRY_RUN_CREATE", po_reference="(server-assigned)",
                 lines_added=len(deduped_lines),
             )
+        next_ref = _next_po_reference(api)
         po = PurchaseOrder.create(api, {
             "supplier": supplier.pk,
-            "reference": order.reference,
+            "reference": next_ref,
+            "supplier_reference": order.reference,
             "description": f"Imported from {order.supplier_name} order {order.reference}",
             **({"target_date": order.order_date} if order.order_date else {}),
         })
@@ -753,7 +766,7 @@ def upsert_purchase_order(
         po.issue()
         po.receiveAll(location=receive_location.pk, status=_STOCK_STATUS_OK)
         return UpsertReport(
-            action="CREATED", po_reference=order.reference,
+            action="CREATED", po_reference=next_ref,
             lines_added=len(deduped_lines),
         )
 

@@ -56,7 +56,9 @@ def test_path_a_creates_po_and_lines_and_receives():
     new_po = _po(status=10)
     new_po.addLineItem.return_value = MagicMock()
 
-    with patch("inventree_sync.order_import.PurchaseOrder") as PO:
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO, \
+         patch("inventree_sync.order_import._next_po_reference",
+               return_value="PO-0006"):
         PO.list.return_value = []
         PO.create.return_value = new_po
         report = upsert_purchase_order(
@@ -70,9 +72,10 @@ def test_path_a_creates_po_and_lines_and_receives():
     PO.create.assert_called_once()
     create_kwargs = PO.create.call_args[0][1]
     assert create_kwargs["supplier"] == 1
-    assert create_kwargs["reference"] == "275708282"
-    # Note: assertion on reference value will be updated in Task 3 when
-    # Pfad A starts using server-assigned references.
+    # reference is now server-assigned, not the supplier-side order ID
+    assert create_kwargs["reference"] == "PO-0006"
+    # supplier-side order ID lives in supplier_reference
+    assert create_kwargs["supplier_reference"] == "275708282"
 
     assert new_po.addLineItem.call_count == 2
     new_po.issue.assert_called_once()
@@ -336,7 +339,9 @@ def test_path_a_dedups_duplicate_sku_rows_last_wins():
     new_po = _po(status=10)
     new_po.addLineItem.return_value = MagicMock()
 
-    with patch("inventree_sync.order_import.PurchaseOrder") as PO:
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO, \
+         patch("inventree_sync.order_import._next_po_reference",
+               return_value="PO-0006"):
         PO.list.return_value = []
         PO.create.return_value = new_po
         report = upsert_purchase_order(
@@ -347,12 +352,10 @@ def test_path_a_dedups_duplicate_sku_rows_last_wins():
             receive_location=MagicMock(pk=7),
         )
 
-    # Exactly two addLineItem calls — one per unique SKU
     assert new_po.addLineItem.call_count == 2
     calls = new_po.addLineItem.call_args_list
     skus_added = {c.kwargs["reference"] for c in calls}
     assert skus_added == {"A", "B"}
-    # Last-wins: A is added with qty=99 / price=9.9, not the first row's 10/1.0
     a_call = next(c for c in calls if c.kwargs["reference"] == "A")
     assert a_call.kwargs["quantity"] == 99
     assert a_call.kwargs["purchase_price"] == 9.9
@@ -482,3 +485,99 @@ def test_find_po_returns_none_when_no_match():
                           supplier_reference="275708282")
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Pfad A server-assigned reference + supplier_reference
+# ---------------------------------------------------------------------------
+
+def test_upsert_path_a_uses_server_assigned_reference():
+    """Pfad A POSTs the server-suggested reference and the supplier-side
+    order ID as supplier_reference."""
+    order = _make_order()  # reference="275708282"
+    supplier = MagicMock(); supplier.pk = 1; supplier.name = "Mouser"
+    sp_a = _supplier_part(pk=101, sku="A")
+    sp_b = _supplier_part(pk=102, sku="B")
+    new_po = _po(status=10)
+    new_po.addLineItem.return_value = MagicMock()
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO, \
+         patch("inventree_sync.order_import._next_po_reference",
+               return_value="PO-0006") as next_ref:
+        PO.list.return_value = []
+        PO.create.return_value = new_po
+        upsert_purchase_order(
+            api=MagicMock(),
+            order=order,
+            supplier=supplier,
+            sku_to_supplier_part={"A": sp_a, "B": sp_b},
+            receive_location=MagicMock(pk=7),
+        )
+
+    next_ref.assert_called_once()
+    create_payload = PO.create.call_args[0][1]
+    assert create_payload["reference"] == "PO-0006"
+    assert create_payload["supplier_reference"] == "275708282"
+    assert "Imported from Mouser order 275708282" in create_payload["description"]
+
+
+def test_upsert_path_a_dry_run_does_not_probe_options():
+    """Dry-run Pfad A must not call _next_po_reference; reports "(server-assigned)"."""
+    order = _make_order()
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO, \
+         patch("inventree_sync.order_import._next_po_reference") as next_ref:
+        PO.list.return_value = []
+        report = upsert_purchase_order(
+            api=MagicMock(),
+            order=order,
+            supplier=MagicMock(pk=1),
+            sku_to_supplier_part={
+                "A": _supplier_part(pk=101, sku="A"),
+                "B": _supplier_part(pk=102, sku="B"),
+            },
+            receive_location=MagicMock(pk=7),
+            dry_run=True,
+        )
+
+    PO.create.assert_not_called()
+    next_ref.assert_not_called()
+    assert report.action == "DRY_RUN_CREATE"
+    assert report.po_reference == "(server-assigned)"
+    assert report.lines_added == 2
+
+
+def test_upsert_path_b_finds_existing_via_supplier_reference():
+    """Pfad B reconcile is exercised when an existing PO matches by
+    supplier_reference, even though its server-assigned reference is
+    something like PO-0001."""
+    order = _make_order()  # supplier-side ref="275708282"
+    sp_a = _supplier_part(pk=101, sku="A")
+    sp_b = _supplier_part(pk=102, sku="B")
+
+    li_a = MagicMock(); li_a.pk = 1; li_a.reference = "A"
+    li_a.quantity = 10; li_a.purchase_price = 1.0; li_a.part = 101
+    li_b = MagicMock(); li_b.pk = 2; li_b.reference = "B"
+    li_b.quantity = 5; li_b.purchase_price = 2.0; li_b.part = 102
+
+    existing_po = _po(status=20, lines=[li_a, li_b],
+                      supplier_reference="275708282")
+    existing_po.reference = "PO-0001"  # server-side identifier, different
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO, \
+         patch("inventree_sync.order_import._next_po_reference") as next_ref:
+        PO.list.return_value = [existing_po]
+        report = upsert_purchase_order(
+            api=MagicMock(),
+            order=order,
+            supplier=MagicMock(pk=1),
+            sku_to_supplier_part={"A": sp_a, "B": sp_b},
+            receive_location=MagicMock(pk=7),
+        )
+
+    # Pfad A wasn't entered → no OPTIONS probe + no create
+    next_ref.assert_not_called()
+    PO.create.assert_not_called()
+    existing_po.addLineItem.assert_not_called()
+    existing_po.receiveAll.assert_called_once()
+    assert report.action == "RECONCILED"
