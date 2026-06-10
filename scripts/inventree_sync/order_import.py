@@ -13,7 +13,10 @@ File is source-of-truth on re-runs:
 """
 from __future__ import annotations
 
+import csv
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass
@@ -50,3 +53,49 @@ class SupplierOrder:
     order_date: str | None  # ISO date "YYYY-MM-DD" (Mouser only; None for LCSC)
     currency: str         # default currency for all lines
     lines: list[SupplierOrderLine] = field(default_factory=list)
+
+
+_LCSC_FILENAME_RE = re.compile(r"^LCSC__([A-Za-z0-9]+)_\d+\.csv$")
+
+
+def _parse_lcsc_reference(filename: str) -> str:
+    """Extract the LCSC order reference from the canonical filename.
+
+    Canonical pattern: ``LCSC__<reference>_<timestamp>.csv``.
+    Returns ``"lcsc-unknown"`` when the pattern doesn't match — caller
+    should override via CLI flag in that case.
+    """
+    m = _LCSC_FILENAME_RE.match(filename)
+    return m.group(1) if m else "lcsc-unknown"
+
+
+def parse_lcsc_csv(path: Path) -> SupplierOrder:
+    """Parse an LCSC-exported order CSV into a SupplierOrder.
+
+    The reference is derived from the filename; LCSC's CSV body has no
+    canonical order ID column.  Currency is hard-coded "USD" because LCSC
+    always exports prices in dollars (column name is ``Unit Price($)``).
+    """
+    lines: list[SupplierOrderLine] = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            sku = (row.get("LCSC Part Number") or "").strip()
+            if not sku:
+                continue  # skip blank/footer rows
+            lines.append(SupplierOrderLine(
+                sku=sku,
+                qty=int((row.get("Quantity") or "0").strip()),
+                unit_price=float((row.get("Unit Price($)") or "0").strip()),
+                currency="USD",
+                mpn=(row.get("Manufacture Part Number") or "").strip(),
+                mfr_name=(row.get("Manufacturer") or "").strip(),
+                description=(row.get("Description") or "").strip(),
+                package=(row.get("Package") or "").strip(),
+            ))
+    return SupplierOrder(
+        supplier_name="LCSC",
+        reference=_parse_lcsc_reference(path.name),
+        order_date=None,
+        currency="USD",
+        lines=lines,
+    )
