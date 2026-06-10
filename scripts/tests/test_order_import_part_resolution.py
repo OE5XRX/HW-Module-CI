@@ -199,3 +199,76 @@ def test_fetcher_failure_falls_back_to_file_data():
     part_data = args[2] if len(args) > 2 else kwargs["part_data"]
     assert part_data.mpn == "0805B333K500NT"
     assert part_data.manufacturer == "FH"
+
+
+def test_lcsc_line_requires_lcsc_fetcher_and_supplier():
+    """Passing None for the active side raises a clear ValueError up-front."""
+    import pytest
+    line, supplier_kind = _line(supplier="LCSC")
+    with pytest.raises(ValueError, match="LCSC line requires"):
+        ensure_part_for_order_line(
+            MagicMock(), line, supplier_kind,
+            None, MagicMock(),               # lcsc_fetcher=None
+            MagicMock(pk=1), MagicMock(pk=2),
+            category_map={},
+        )
+    with pytest.raises(ValueError, match="LCSC line requires"):
+        ensure_part_for_order_line(
+            MagicMock(), line, supplier_kind,
+            MagicMock(), MagicMock(),
+            None, MagicMock(pk=2),           # lcsc_supplier=None
+            category_map={},
+        )
+
+
+def test_mouser_line_requires_mouser_fetcher_and_supplier():
+    """Same for Mouser side — opposite mismatch."""
+    import pytest
+    line = SupplierOrderLine(
+        sku="576-0297003.L", qty=10, unit_price=0.381, currency="EUR",
+        mpn="0297003.L", mfr_name="", description="Fuse",
+    )
+    with pytest.raises(ValueError, match="Mouser line requires"):
+        ensure_part_for_order_line(
+            MagicMock(), line, "Mouser",
+            MagicMock(), None,               # mouser_fetcher=None
+            MagicMock(pk=1), MagicMock(pk=2),
+            category_map={},
+        )
+    with pytest.raises(ValueError, match="Mouser line requires"):
+        ensure_part_for_order_line(
+            MagicMock(), line, "Mouser",
+            MagicMock(), MagicMock(),
+            MagicMock(pk=1), None,           # mouser_supplier=None
+            category_map={},
+        )
+
+
+def test_unused_side_may_be_none():
+    """An LCSC line accepts None for the *unused* Mouser fetcher/supplier."""
+    line, supplier_kind = _line(supplier="LCSC")
+    lcsc_fetcher = MagicMock()
+    lcsc_fetcher.fetch_by_sku.return_value = PartData(
+        mpn="0805B333K500NT", manufacturer="FH",
+        description="33nF", lcsc_sku="C1739",
+    )
+    with patch("inventree_sync.order_import.find_existing_part") as fe, \
+         patch("inventree_sync.order_import.find_part_by_mpn_and_manufacturer") as fmpn, \
+         patch("inventree_sync.order_import.find_part_by_name") as fname, \
+         patch("inventree_sync.order_import.resolve_part_category") as rcat, \
+         patch("inventree_sync.order_import.create_part_in_inventree") as create, \
+         patch("inventree_sync.order_import.SupplierPart") as SP:
+        fe.return_value = None
+        fmpn.return_value = None
+        fname.return_value = None
+        rcat.return_value = MagicMock(pk=9)
+        create.return_value = _part_mock(pk=606)
+        SP.list.return_value = [_supplier_part_mock(pk=99, sku="C1739", part_pk=606)]
+        part, sp = ensure_part_for_order_line(
+            MagicMock(), line, supplier_kind,
+            lcsc_fetcher, None,              # mouser_fetcher unused → None
+            MagicMock(pk=1), None,           # mouser_supplier unused → None
+            category_map={},
+        )
+    assert part.pk == 606
+    assert sp.pk == 99

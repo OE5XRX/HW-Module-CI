@@ -343,11 +343,11 @@ def _partdata_from_line(line: SupplierOrderLine) -> PartData:
 def ensure_part_for_order_line(
     api: InvenTreeAPI,
     line: SupplierOrderLine,
-    supplier_kind: str,                  # "LCSC" or "Mouser"
-    lcsc_fetcher: LCSCFetcher,
-    mouser_fetcher: MouserFetcher,
-    lcsc_supplier: Company,
-    mouser_supplier: Company,
+    supplier_kind: str,                       # "LCSC" or "Mouser"
+    lcsc_fetcher: Optional[LCSCFetcher],
+    mouser_fetcher: Optional[MouserFetcher],
+    lcsc_supplier: Optional[Company],
+    mouser_supplier: Optional[Company],
     category_map: dict,
 ) -> tuple[Part, SupplierPart]:
     """Resolve a line to (Part, SupplierPart), creating both if needed.
@@ -362,12 +362,31 @@ def ensure_part_for_order_line(
     On fetcher failure (3rd-party API down or SKU unknown), a minimal
     PartData is synthesised from the file row so the Part can still be
     created — just without datasheet/image/parameter enrichment.
+
+    Fetcher / supplier arguments are ``Optional`` because a single-supplier
+    import run (e.g. ``--lcsc-csv`` without ``--mouser-xls``) instantiates
+    only the side it needs. The *unused* side may legally be ``None``; the
+    side matching ``supplier_kind`` MUST be non-None — this is enforced at
+    the top of the function so misuse fails loud at the call site rather
+    than silently NPE-ing inside the dedup chain.
     """
     if supplier_kind not in ("LCSC", "Mouser"):
         raise ValueError(
             f"supplier_kind must be 'LCSC' or 'Mouser', got {supplier_kind!r}"
         )
     is_lcsc = supplier_kind == "LCSC"
+    if is_lcsc and (lcsc_fetcher is None or lcsc_supplier is None):
+        raise ValueError(
+            "LCSC line requires non-None lcsc_fetcher and lcsc_supplier "
+            "(check the call site — single-supplier runs must pass both for "
+            "the side actually being imported)."
+        )
+    if not is_lcsc and (mouser_fetcher is None or mouser_supplier is None):
+        raise ValueError(
+            "Mouser line requires non-None mouser_fetcher and mouser_supplier "
+            "(check the call site — single-supplier runs must pass both for "
+            "the side actually being imported)."
+        )
     lcsc_skus = [line.sku] if is_lcsc else []
     mouser_skus = [line.sku] if not is_lcsc else []
 

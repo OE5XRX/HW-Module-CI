@@ -86,15 +86,22 @@ def _suppress_category_warning() -> None:
 def _import_one_order(
     api: InvenTreeAPI,
     order: SupplierOrder,
-    lcsc_fetcher: LCSCFetcher,
-    mouser_fetcher: MouserFetcher,
+    lcsc_fetcher: Optional[LCSCFetcher],
+    mouser_fetcher: Optional[MouserFetcher],
     lcsc_supplier,
     mouser_supplier,
     category_map: dict,
     receive_location,
     dry_run: bool,
 ) -> int:
-    """Process one parsed SupplierOrder. Returns exit-code (0 ok, 1 drift)."""
+    """Process one parsed SupplierOrder. Returns exit-code (0 ok, 1 drift).
+
+    *lcsc_fetcher* / *mouser_fetcher* are ``Optional`` because single-
+    supplier runs (``--lcsc-csv`` xor ``--mouser-xls``) instantiate only
+    the side they need. The side matching ``order.supplier_name`` MUST be
+    non-None — ``ensure_part_for_order_line`` enforces that at the call
+    site of every line.
+    """
     supplier_kind = order.supplier_name  # "LCSC" or "Mouser"
     supplier = lcsc_supplier if supplier_kind == "LCSC" else mouser_supplier
 
