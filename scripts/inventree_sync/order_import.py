@@ -786,8 +786,15 @@ def upsert_purchase_order(
         )
 
     status = int(getattr(existing, "status", 0))
+    # Defensive: real InvenTree POs always have a non-blank server-assigned
+    # reference (the field is required at the API layer). The fallback to
+    # `<unknown>` exists for the edge case where a partial mock or a
+    # corrupted API response yields an empty/None reference; using a clear
+    # placeholder instead of silently substituting the supplier-side
+    # `order.reference` preserves the `UpsertReport.po_reference` contract
+    # (= InvenTree-side reference, never supplier-side).
     existing_ref = (
-        str(getattr(existing, "reference", "") or "") or order.reference
+        str(getattr(existing, "reference", "") or "") or "<unknown>"
     )
     existing_lines = list(existing.getLineItems())
     diff = compute_po_line_diff(deduped_lines, existing_lines, sku_to_sp_pk)

@@ -176,10 +176,12 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, supplier_reference: str):
     defensive pattern as ``find_part_by_name`` in ``client.py``.
 
     Returns the first match (or None). Multiple matches are not
-    expected — supplier_reference is the operational identifier — and
-    we don't warn on them to keep the path simple; in practice a
-    duplicate would be a data-quality issue the operator should
-    resolve in the UI.
+    expected — supplier_reference is the operational identifier — but
+    when they happen we emit a ``logger.warning`` naming the supplier,
+    supplier_reference, match count, and the picked PO's pk so the
+    data drift surfaces immediately. The first match is still
+    returned to keep the import moving; the operator resolves the
+    duplicate in the InvenTree UI.
     """
     matches = PurchaseOrder.list(api, supplier=supplier_pk)
     for po in matches:
@@ -282,7 +284,7 @@ the new helper.
 | OPTIONS request fails (network, 5xx) | `_next_po_reference` raises RuntimeError; bubbles up through `upsert_purchase_order` to `_import_one_order`'s RuntimeError-catcher → records FAIL on reporter (dry-run path: not triggered because we skip OPTIONS in dry-run). |
 | OPTIONS response missing `actions.POST.reference.default` | Same path: RuntimeError, FAIL record, rc=1. |
 | Server rejects POST with new pattern violation (server pattern changed between OPTIONS and POST — race) | InvenTree returns HTTP 400 → InvenTreeAPI raises HTTPError → bubbles up like any other create failure. |
-| Multiple POs with the same supplier_reference (data-quality issue) | `_find_po` returns the first. We don't warn — operator-side cleanup. |
+| Multiple POs with the same supplier_reference (data-quality issue) | `_find_po` returns the first AND emits a `logger.warning` naming the supplier, supplier_reference, match count, and picked PO pk. Operator resolves the duplicate in the UI. |
 
 ---
 

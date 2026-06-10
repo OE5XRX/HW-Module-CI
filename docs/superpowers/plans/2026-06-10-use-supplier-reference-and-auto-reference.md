@@ -236,10 +236,11 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, supplier_reference: str):
     server-side filter as authoritative in that case).
 
     Returns the first match (or None). Multiple matches are not
-    expected — supplier_reference is the operational identifier — and
-    we don't warn on them to keep the path simple; in practice a
-    duplicate would be a data-quality issue the operator should resolve
-    in the UI.
+    expected — supplier_reference is the operational identifier — but
+    when they happen a ``logger.warning`` is emitted naming the
+    supplier, supplier_reference, match count, and the picked PO's pk
+    so the data drift surfaces immediately. (This warning was added
+    during the final review round before the PR opened.)
     """
     matches = PurchaseOrder.list(api, supplier=supplier_pk)
     for po in matches:

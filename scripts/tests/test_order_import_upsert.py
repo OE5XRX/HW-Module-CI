@@ -630,3 +630,38 @@ def test_upsert_path_b_finds_existing_via_supplier_reference():
     existing_po.receiveAll.assert_called_once()
     assert report.action == "RECONCILED"
     assert report.po_reference == "PO-0001"
+
+
+def test_upsert_path_b_empty_existing_reference_yields_unknown_placeholder():
+    """Defensive: if an existing PO's `reference` is empty/None (test mock or
+    corrupted API response), report.po_reference is the explicit "<unknown>"
+    placeholder — NOT the supplier-side order ID (which would silently
+    violate the UpsertReport.po_reference contract)."""
+    order = _make_order()  # reference="275708282"
+    sp_a = _supplier_part(pk=101, sku="A")
+    sp_b = _supplier_part(pk=102, sku="B")
+
+    li_a = MagicMock(); li_a.pk = 1; li_a.reference = "A"
+    li_a.quantity = 10; li_a.purchase_price = 1.0; li_a.part = 101
+    li_b = MagicMock(); li_b.pk = 2; li_b.reference = "B"
+    li_b.quantity = 5; li_b.purchase_price = 2.0; li_b.part = 102
+
+    existing_po = _po(status=20, lines=[li_a, li_b],
+                      supplier_reference="275708282")
+    existing_po.reference = ""  # blank — should NOT fall back to "275708282"
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO, \
+         patch("inventree_sync.order_import._next_po_reference"):
+        PO.list.return_value = [existing_po]
+        report = upsert_purchase_order(
+            api=MagicMock(),
+            order=order,
+            supplier=MagicMock(pk=1),
+            sku_to_supplier_part={"A": sp_a, "B": sp_b},
+            receive_location=MagicMock(pk=7),
+        )
+
+    assert report.action == "RECONCILED"
+    assert report.po_reference == "<unknown>"
+    # Crucially: NOT the supplier-side order ID — that would mislead the operator
+    assert report.po_reference != "275708282"
