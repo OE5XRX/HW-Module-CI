@@ -643,11 +643,14 @@ def _next_po_reference(api: InvenTreeAPI) -> str:
     try:
         resp = api.request(PurchaseOrder.URL, method="OPTIONS")
         body = resp.json()
-        return body["actions"]["POST"]["reference"]["default"]
+        ref = body["actions"]["POST"]["reference"]["default"]
+        if not isinstance(ref, str) or not ref:
+            raise KeyError("actions.POST.reference.default present but not a non-empty string")
+        return ref
     # Broad except is intentional: HTTPError/ConnectionError/KeyError/TypeError/
     # JSONDecodeError all map to the same caller-visible contract — fail loud.
     except Exception as exc:
-        host = getattr(api, "base_url", "<unknown>")
+        host = getattr(api, "api_url", getattr(api, "base_url", "<unknown>"))
         raise RuntimeError(
             f"Failed to read next PurchaseOrder.reference from "
             f"OPTIONS {host}{PurchaseOrder.URL} "
@@ -668,13 +671,12 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, supplier_reference: str):
     serialize FKs as strings, so we coerce to int before comparing and
     skip the check when the value isn't numeric.
 
-    Returns the first match (or None). Multiple matches are not
-    expected — supplier_reference is the operational identifier — and
-    we don't warn on them to keep the path simple; in practice a
-    duplicate would be a data-quality issue the operator should resolve
-    in the UI.
+    Returns the first match (or None). Logs a warning when more than one
+    PO matches — that indicates a data-quality issue the operator should
+    resolve in the InvenTree UI (duplicate supplier_reference values).
     """
     matches = PurchaseOrder.list(api, supplier=supplier_pk)
+    filtered = []
     for po in matches:
         # Supplier post-filter: server-side ?supplier= filter is unreliable on
         # some InvenTree versions; verify locally. Same pattern as below for
@@ -692,8 +694,16 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, supplier_reference: str):
         # curl). The supplier_reference field carries the Mouser/LCSC order ID.
         po_supplier_ref = getattr(po, "supplier_reference", None)
         if isinstance(po_supplier_ref, str) and po_supplier_ref == supplier_reference:
-            return po
-    return None
+            filtered.append(po)
+    if len(filtered) > 1:
+        logger.warning(
+            "PO lookup for supplier=%d supplier_reference=%r returned "
+            "%d matches; using first (pk=%s). Resolve the duplicate in "
+            "the InvenTree UI.",
+            supplier_pk, supplier_reference, len(filtered),
+            getattr(filtered[0], "pk", "?"),
+        )
+    return filtered[0] if filtered else None
 
 
 def upsert_purchase_order(
@@ -776,6 +786,9 @@ def upsert_purchase_order(
         )
 
     status = int(getattr(existing, "status", 0))
+    existing_ref = (
+        str(getattr(existing, "reference", "") or "") or order.reference
+    )
     existing_lines = list(existing.getLineItems())
     diff = compute_po_line_diff(deduped_lines, existing_lines, sku_to_sp_pk)
 
@@ -784,7 +797,7 @@ def upsert_purchase_order(
         if diff.is_empty:
             logger.info("PO %s already COMPLETE and matches file — no-op.",
                         order.reference)
-            return UpsertReport(action="IN_SYNC", po_reference=str(getattr(existing, "reference", "") or "") or order.reference)
+            return UpsertReport(action="IN_SYNC", po_reference=existing_ref)
         raise RuntimeError(
             f"PO {order.reference} ({order.supplier_name}) is COMPLETE but "
             f"differs from the source file:\n"
@@ -814,7 +827,7 @@ def upsert_purchase_order(
 
     if dry_run:
         return UpsertReport(
-            action="DRY_RUN_RECONCILE", po_reference=str(getattr(existing, "reference", "") or "") or order.reference,
+            action="DRY_RUN_RECONCILE", po_reference=existing_ref,
             lines_added=len(diff.to_add),
             lines_updated=len(diff.to_update),
             lines_deleted=len(diff.to_delete),
@@ -842,7 +855,7 @@ def upsert_purchase_order(
     existing.receiveAll(location=receive_location.pk, status=_STOCK_STATUS_OK)
 
     return UpsertReport(
-        action="RECONCILED", po_reference=str(getattr(existing, "reference", "") or "") or order.reference,
+        action="RECONCILED", po_reference=existing_ref,
         lines_added=len(diff.to_add),
         lines_updated=len(diff.to_update),
         lines_deleted=len(diff.to_delete),

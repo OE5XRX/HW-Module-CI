@@ -422,6 +422,7 @@ def test_next_po_reference_raises_when_default_missing():
 
     api = MagicMock()
     api.base_url = "http://test.example/"
+    api.api_url = "http://test.example/api/"
     resp = MagicMock()
     resp.json.return_value = {"actions": {"POST": {}}}
     api.request.return_value = resp
@@ -430,19 +431,38 @@ def test_next_po_reference_raises_when_default_missing():
         _next_po_reference(api)
 
 
+def test_next_po_reference_raises_when_default_is_null_or_empty():
+    """OPTIONS response with default=None or "" → RuntimeError, not a silent None return."""
+    from inventree_sync.order_import import _next_po_reference
+
+    for bad_default in (None, ""):
+        api = MagicMock()
+        api.base_url = "http://test.example/"
+        api.api_url = "http://test.example/api/"
+        resp = MagicMock()
+        resp.json.return_value = {
+            "actions": {"POST": {"reference": {"default": bad_default}}},
+        }
+        api.request.return_value = resp
+
+        with pytest.raises(RuntimeError, match=r"actions\.POST\.reference\.default"):
+            _next_po_reference(api)
+
+
 def test_next_po_reference_raises_when_options_request_fails():
     """Network/HTTP failure on OPTIONS → RuntimeError, not a silent fallback."""
     from inventree_sync.order_import import _next_po_reference
 
     api = MagicMock()
     api.base_url = "http://test.example/"
+    api.api_url = "http://test.example/api/"
     api.request.side_effect = ConnectionError("server unreachable")
 
     with pytest.raises(RuntimeError) as exc_info:
         _next_po_reference(api)
-    # Host + relative path both present so operators chasing alerts can
-    # tell which InvenTree instance failed.
-    assert "http://test.example/order/po/" in str(exc_info.value)
+    # api_url (ending in "api/") + relative path both present so operators
+    # chasing alerts get a URL that actually resolves.
+    assert "http://test.example/api/order/po/" in str(exc_info.value)
     assert "Failed to read next PurchaseOrder.reference" in str(exc_info.value)
 
 
@@ -487,6 +507,32 @@ def test_find_po_returns_none_when_no_match():
                           supplier_reference="275708282")
 
     assert result is None
+
+
+def test_find_po_warns_when_multiple_matches():
+    """Duplicate supplier_reference in InvenTree → warning logged + first returned."""
+    from inventree_sync.order_import import _find_po
+
+    po1 = MagicMock(); po1.pk = 100; po1.supplier = 259
+    po1.supplier_reference = "275708282"
+    po2 = MagicMock(); po2.pk = 200; po2.supplier = 259
+    po2.supplier_reference = "275708282"  # duplicate
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO, \
+         patch("inventree_sync.order_import.logger") as mock_logger:
+        PO.list.return_value = [po1, po2]
+        result = _find_po(MagicMock(), supplier_pk=259,
+                          supplier_reference="275708282")
+
+    assert result is po1
+    mock_logger.warning.assert_called_once()
+    args = mock_logger.warning.call_args[0]
+    # Format string + positional args: msg pattern, supplier_pk, supplier_ref, count, first_pk
+    assert "duplicate" in args[0].lower() or "matches" in args[0].lower()
+    assert 259 in args
+    assert "275708282" in args
+    assert 2 in args   # match count
+    assert 100 in args  # first pk
 
 
 # ---------------------------------------------------------------------------
