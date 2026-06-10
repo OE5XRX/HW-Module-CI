@@ -22,7 +22,20 @@ from pathlib import Path
 from typing import Optional
 
 from inventree.api import InvenTreeAPI
+from inventree.company import Company, SupplierPart
+from inventree.part import Part
 from inventree.stock import StockLocation
+
+from .categories import resolve_part_category
+from .client import (
+    create_part_in_inventree,
+    ensure_supplier_parts,
+    find_existing_part,
+    find_part_by_mpn_and_manufacturer,
+    find_part_by_name,
+)
+from .fetchers import LCSCFetcher, MouserFetcher
+from .models import PartData
 
 logger = logging.getLogger(__name__)
 
@@ -270,3 +283,125 @@ def get_receive_location(api: InvenTreeAPI, name: str) -> StockLocation:
         "No StockLocation found in InvenTree. Create one (e.g. 'Lager') "
         "in the UI before running this importer."
     )
+
+
+def _lookup_supplier_part(api: InvenTreeAPI, sku: str) -> SupplierPart:
+    """Return the SupplierPart for *sku* or raise RuntimeError.
+
+    Used after create_part_in_inventree to recover the SupplierPart PK
+    (the create call returns only the Part).
+    """
+    sps = SupplierPart.list(api, SKU=sku)
+    for sp in sps:
+        if sp.SKU == sku:
+            return sp
+    raise RuntimeError(
+        f"SupplierPart for SKU {sku!r} not found — expected after "
+        "create_part_in_inventree or ensure_supplier_parts. "
+        "Did a SupplierPart create fail silently?"
+    )
+
+
+def _partdata_from_line(line: SupplierOrderLine) -> PartData:
+    """Build a minimal PartData from a SupplierOrderLine when supplier API fails."""
+    return PartData(
+        mpn=line.mpn,
+        manufacturer=line.mfr_name,
+        description=line.description,
+        package=line.package,
+        lcsc_sku="",
+        mouser_sku="",
+    )
+
+
+def ensure_part_for_order_line(
+    api: InvenTreeAPI,
+    line: SupplierOrderLine,
+    supplier_kind: str,                  # "LCSC" or "Mouser"
+    lcsc_fetcher: LCSCFetcher,
+    mouser_fetcher: MouserFetcher,
+    lcsc_supplier: Company,
+    mouser_supplier: Company,
+    category_map: dict,
+) -> tuple[Part, SupplierPart]:
+    """Resolve a line to (Part, SupplierPart), creating both if needed.
+
+    Dedup chain (same priority as part_manager.ensure_parts_exist):
+      1. find_existing_part via the line's SKU.
+      2. Fetcher (LCSC or Mouser) → PartData.
+      3. find_part_by_mpn_and_manufacturer.
+      4. find_part_by_name (name = part_data.mpn or line.mpn or sku).
+      5. create_part_in_inventree.
+
+    On fetcher failure (3rd-party API down or SKU unknown), a minimal
+    PartData is synthesised from the file row so the Part can still be
+    created — just without datasheet/image/parameter enrichment.
+    """
+    if supplier_kind not in ("LCSC", "Mouser"):
+        raise ValueError(
+            f"supplier_kind must be 'LCSC' or 'Mouser', got {supplier_kind!r}"
+        )
+    is_lcsc = supplier_kind == "LCSC"
+    lcsc_skus = [line.sku] if is_lcsc else []
+    mouser_skus = [line.sku] if not is_lcsc else []
+
+    # 1. SKU lookup
+    existing = find_existing_part(api, lcsc_skus, mouser_skus)
+    if existing is not None:
+        return existing, _lookup_supplier_part(api, line.sku)
+
+    # 2. Supplier fetch
+    if is_lcsc:
+        part_data = lcsc_fetcher.fetch_by_sku(line.sku)
+    else:
+        part_data = mouser_fetcher.fetch(line.sku)
+    if part_data is None:
+        logger.warning(
+            "Supplier API returned no data for %s SKU %r — "
+            "falling back to file row.", supplier_kind, line.sku)
+        part_data = _partdata_from_line(line)
+    # Always stamp the right SKU back onto part_data so downstream creates
+    # have it.
+    if is_lcsc:
+        part_data.lcsc_sku = line.sku
+    else:
+        part_data.mouser_sku = line.sku
+
+    # 3. MPN + Manufacturer
+    mpn = (part_data.mpn or line.mpn or "").strip()
+    mfr = (part_data.manufacturer or line.mfr_name or "").strip()
+    if mpn and mfr:
+        by_mpn = find_part_by_mpn_and_manufacturer(api, mpn, mfr)
+        if by_mpn is not None:
+            ensure_supplier_parts(
+                api, by_mpn, part_data,
+                lcsc_supplier, mouser_supplier,
+                lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+            )
+            return by_mpn, _lookup_supplier_part(api, line.sku)
+
+    # 4. Name lookup
+    name = (part_data.mpn or line.mpn or line.sku).strip()
+    by_name = find_part_by_name(api, name)
+    if by_name is not None:
+        ensure_supplier_parts(
+            api, by_name, part_data,
+            lcsc_supplier, mouser_supplier,
+            lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+        )
+        return by_name, _lookup_supplier_part(api, line.sku)
+
+    # 5. Create
+    category = resolve_part_category(
+        api, "", part_data, line.package, category_map,
+    )
+    created = create_part_in_inventree(
+        api, name, part_data, category,
+        lcsc_supplier, mouser_supplier,
+        lcsc_skus=lcsc_skus, mouser_skus=mouser_skus,
+    )
+    if created is None:
+        raise RuntimeError(
+            f"create_part_in_inventree returned None for line {line.sku!r}"
+        )
+    return created, _lookup_supplier_part(api, line.sku)
