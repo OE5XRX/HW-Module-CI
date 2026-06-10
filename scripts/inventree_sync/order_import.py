@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -405,3 +406,116 @@ def ensure_part_for_order_line(
             f"create_part_in_inventree returned None for line {line.sku!r}"
         )
     return created, _lookup_supplier_part(api, line.sku)
+
+
+_PRICE_EPSILON = 1e-6  # tolerance for float price comparison
+
+
+@dataclass
+class LineItemAction:
+    """An update operation against an existing PurchaseOrderLineItem."""
+    line_item: object     # PurchaseOrderLineItem (kept generic for test mocks)
+    new_quantity: int
+    new_price: float
+
+
+@dataclass
+class POLineDiff:
+    """Outcome of comparing a SupplierOrder against an InvenTree PO's lines."""
+    to_add: list           # list[SupplierOrderLine]
+    to_update: list        # list[LineItemAction]
+    to_delete: list        # list[PurchaseOrderLineItem]
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.to_add or self.to_update or self.to_delete)
+
+    def format_report(self) -> str:
+        """Human-readable summary used by Pfad C drift fail-loud."""
+        out = []
+        for sl in self.to_add:
+            out.append(f"  ADD     {sl.sku} qty={sl.qty} {sl.currency} {sl.unit_price}")
+        for upd in self.to_update:
+            out.append(
+                f"  UPDATE  {getattr(upd.line_item, 'reference', '?')} "
+                f"qty→{upd.new_quantity} price→{upd.new_price}"
+            )
+        for li in self.to_delete:
+            ref = getattr(li, "reference", "") or f"line#{li.pk}"
+            qty = getattr(li, "quantity", "?")
+            received = getattr(li, "received", 0)
+            warn = ""
+            if received and int(received) > 0:
+                warn = f" (would orphan {received} StockItem(s))"
+            out.append(f"  REMOVE  {ref} qty={qty}{warn}")
+        return "\n".join(out) if out else "  (no changes)"
+
+
+def _po_line_sku(po_line, sp_pk_to_sku: dict) -> str:
+    """Return the SKU for a PurchaseOrderLineItem.
+
+    Strategy: prefer line.reference (we set it = SKU during create); fall
+    back to looking up SupplierPart.SKU via the supplier_part PK on the
+    line.  Fallback supports POs that were originally created without
+    `reference`.
+    """
+    ref = (getattr(po_line, "reference", "") or "").strip()
+    if ref:
+        return ref
+    sp_pk = getattr(po_line, "part", None)
+    if sp_pk is None:
+        return ""
+    return sp_pk_to_sku.get(int(sp_pk), "")
+
+
+def compute_po_line_diff(
+    file_lines: list,           # list[SupplierOrderLine]
+    po_lines: list,             # list[PurchaseOrderLineItem]
+    sku_to_supplier_part_pk: dict,
+) -> POLineDiff:
+    """Diff a SupplierOrder against an existing PO's line items.
+
+    Returns three buckets keyed by SKU:
+      to_add     SupplierOrderLines whose SKU is not yet in the PO
+      to_update  Existing items whose qty or price disagrees with the file
+      to_delete  PO items whose SKU is no longer in the file
+
+    *sku_to_supplier_part_pk* lets the indexer recover SKUs from PO line
+    items that were created without ``reference`` (older / hand-made POs).
+    """
+    sp_pk_to_sku = {v: k for k, v in sku_to_supplier_part_pk.items()}
+
+    # Index file by SKU (last write wins for duplicate-SKU rows — shouldn't
+    # happen with real Mouser/LCSC exports but defensive against hand-edits)
+    by_sku_file: dict[str, SupplierOrderLine] = {fl.sku: fl for fl in file_lines}
+    by_sku_po: dict[str, object] = {}
+    for li in po_lines:
+        sku = _po_line_sku(li, sp_pk_to_sku)
+        if sku:
+            by_sku_po[sku] = li
+
+    to_add: list = []
+    to_update: list = []
+    to_delete: list = []
+
+    for sku, fl in by_sku_file.items():
+        existing = by_sku_po.get(sku)
+        if existing is None:
+            to_add.append(fl)
+            continue
+        ex_qty = int(getattr(existing, "quantity", 0))
+        ex_price = float(getattr(existing, "purchase_price", 0) or 0)
+        qty_diff = ex_qty != fl.qty
+        price_diff = not math.isclose(ex_price, fl.unit_price, abs_tol=_PRICE_EPSILON)
+        if qty_diff or price_diff:
+            to_update.append(LineItemAction(
+                line_item=existing,
+                new_quantity=fl.qty,
+                new_price=fl.unit_price,
+            ))
+
+    for sku, li in by_sku_po.items():
+        if sku not in by_sku_file:
+            to_delete.append(li)
+
+    return POLineDiff(to_add=to_add, to_update=to_update, to_delete=to_delete)
