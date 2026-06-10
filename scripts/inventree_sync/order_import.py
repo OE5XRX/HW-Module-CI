@@ -25,6 +25,7 @@ from typing import Optional
 from inventree.api import InvenTreeAPI
 from inventree.company import Company, SupplierPart
 from inventree.part import Part
+from inventree.purchase_order import PurchaseOrder
 from inventree.stock import StockLocation
 
 from .categories import resolve_part_category
@@ -519,3 +520,145 @@ def compute_po_line_diff(
             to_delete.append(li)
 
     return POLineDiff(to_add=to_add, to_update=to_update, to_delete=to_delete)
+
+
+_STATUS_PENDING = 10
+_STATUS_PLACED = 20
+_STATUS_COMPLETE = 30
+_STOCK_STATUS_OK = 10  # InvenTree StockItem status code "OK"
+
+
+@dataclass
+class UpsertReport:
+    """Result of upsert_purchase_order — used by the CLI for summary print."""
+    action: str               # CREATED | RECONCILED | IN_SYNC | DRY_RUN_*
+    po_reference: str
+    lines_added: int = 0
+    lines_updated: int = 0
+    lines_deleted: int = 0
+
+
+def _find_po(api: InvenTreeAPI, supplier_pk: int, reference: str):
+    matches = PurchaseOrder.list(api, supplier=supplier_pk, reference=reference)
+    for po in matches:
+        # Post-filter — server may ignore the reference= filter (same defensive
+        # pattern as find_part_by_name in client.py).  Only reject when the
+        # PO's reference is a concrete string that differs from the target;
+        # tolerate non-string types (test mocks) so the server-side filter is
+        # treated as authoritative.
+        po_ref = getattr(po, "reference", None)
+        if isinstance(po_ref, str) and po_ref != reference:
+            continue
+        return po
+    return None
+
+
+def upsert_purchase_order(
+    api: InvenTreeAPI,
+    order: SupplierOrder,
+    supplier,                                # Company
+    sku_to_supplier_part: dict,              # dict[str, SupplierPart]
+    receive_location,                        # StockLocation
+    *,
+    dry_run: bool = False,
+) -> UpsertReport:
+    """Create or reconcile a PurchaseOrder for *order*, then receiveAll.
+
+    Three paths keyed off the existing PO's status:
+      A — no PO matches reference → create + add all lines + issue + receive.
+      B — PO exists in PENDING(10)/PLACED(20) → reconcile to file + receive.
+      C — PO exists in COMPLETE(30+) → diff against file:
+            empty → log IN_SYNC, return.
+            non-empty → raise RuntimeError with a drift report (no writes).
+
+    dry_run=True suppresses every InvenTree mutation; the planned action
+    and counts are still returned via UpsertReport for the CLI's dry-run
+    summary.
+    """
+    sku_to_sp_pk = {sku: sp.pk for sku, sp in sku_to_supplier_part.items()}
+
+    existing = _find_po(api, supplier.pk, order.reference)
+
+    if existing is None:
+        # Pfad A
+        if dry_run:
+            return UpsertReport(
+                action="DRY_RUN_CREATE", po_reference=order.reference,
+                lines_added=len(order.lines),
+            )
+        po = PurchaseOrder.create(api, {
+            "supplier": supplier.pk,
+            "reference": order.reference,
+            "description": f"Imported from {order.supplier_name} order {order.reference}",
+            **({"target_date": order.order_date} if order.order_date else {}),
+        })
+        for line in order.lines:
+            sp = sku_to_supplier_part[line.sku]
+            po.addLineItem(
+                part=sp.pk,
+                quantity=line.qty,
+                purchase_price=line.unit_price,
+                purchase_price_currency=line.currency,
+                reference=line.sku,
+            )
+        po.issue()
+        po.receiveAll(location=receive_location.pk, status=_STOCK_STATUS_OK)
+        return UpsertReport(
+            action="CREATED", po_reference=order.reference,
+            lines_added=len(order.lines),
+        )
+
+    status = int(getattr(existing, "status", 0))
+    existing_lines = list(existing.getLineItems())
+    diff = compute_po_line_diff(order.lines, existing_lines, sku_to_sp_pk)
+
+    if status >= _STATUS_COMPLETE:
+        # Pfad C
+        if diff.is_empty:
+            logger.info("PO %s already COMPLETE and matches file — no-op.",
+                        order.reference)
+            return UpsertReport(action="IN_SYNC", po_reference=order.reference)
+        raise RuntimeError(
+            f"PO {order.reference} ({order.supplier_name}) is COMPLETE but "
+            f"differs from the source file:\n"
+            f"{diff.format_report()}\n"
+            f"Resolve manually in the InvenTree UI (or delete the PO + "
+            f"associated StockItems) and re-run."
+        )
+
+    # Pfad B
+    if dry_run:
+        return UpsertReport(
+            action="DRY_RUN_RECONCILE", po_reference=order.reference,
+            lines_added=len(diff.to_add),
+            lines_updated=len(diff.to_update),
+            lines_deleted=len(diff.to_delete),
+        )
+
+    for sl in diff.to_add:
+        sp = sku_to_supplier_part[sl.sku]
+        existing.addLineItem(
+            part=sp.pk,
+            quantity=sl.qty,
+            purchase_price=sl.unit_price,
+            purchase_price_currency=sl.currency,
+            reference=sl.sku,
+        )
+    for upd in diff.to_update:
+        upd.line_item.save({
+            "quantity": upd.new_quantity,
+            "purchase_price": upd.new_price,
+        })
+    for li in diff.to_delete:
+        li.delete()
+
+    if status == _STATUS_PENDING:
+        existing.issue()
+    existing.receiveAll(location=receive_location.pk, status=_STOCK_STATUS_OK)
+
+    return UpsertReport(
+        action="RECONCILED", po_reference=order.reference,
+        lines_added=len(diff.to_add),
+        lines_updated=len(diff.to_update),
+        lines_deleted=len(diff.to_delete),
+    )
