@@ -158,8 +158,14 @@ def _import_one_order(
                 )
             return 1
         # Real-run path: sp is a SupplierPart, add it to the mapping.
-        # Dry-run path: sp is None, skip — upsert_purchase_order short-
-        # circuits before touching the mapping in all three paths.
+        # Dry-run path: sp is None, skip. upsert_purchase_order's dry-run
+        # branches never *index* into sku_to_supplier_part[sku] (Pfad A/B
+        # return early before the addLineItem loop where indexing would
+        # happen). Pfad C only iterates the mapping via .items() to build
+        # the reverse sku→pk map for compute_po_line_diff — that iteration
+        # is safely empty too, which matches the "acceptable Pfad-C edge-
+        # case" documented in the spec (POs without `reference` would only
+        # diff cleanly when a non-empty reverse-map fallback exists).
         if sp is not None:
             sku_to_sp[line.sku] = sp
 
