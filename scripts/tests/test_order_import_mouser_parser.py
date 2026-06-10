@@ -25,6 +25,20 @@ def test_parse_mouser_price_us_format():
     assert _parse_mouser_price("0.0074") == 0.0074
 
 
+def test_parse_mouser_price_unambiguous_thousands_groups():
+    """Multi-group separators (>=2 thousand-groups) are unambiguously thousands.
+
+    Distinguishes from single-group forms like "0,381" where comma is
+    decimal under the European-format default — see _parse_mouser_price
+    docstring for the rationale.
+    """
+    assert _parse_mouser_price("1,234,567") == 1234567.0
+    assert _parse_mouser_price("1.234.567") == 1234567.0
+    assert _parse_mouser_price("€ 12,345,678") == 12345678.0
+    # Sanity: single-group form keeps the existing European-decimal interpretation
+    assert _parse_mouser_price("0,381") == 0.381
+
+
 def test_parse_mouser_price_empty_returns_zero():
     assert _parse_mouser_price("") == 0.0
     assert _parse_mouser_price(None) == 0.0

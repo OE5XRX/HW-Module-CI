@@ -132,18 +132,38 @@ _MOUSER_MONTHS = {
 
 
 def _parse_mouser_price(price_str: Optional[str]) -> float:
-    """Parse a Mouser-style price cell ("€ 0,381", "$ 1.23", "0.0074").
+    """Parse a European-formatted Mouser price cell.
 
-    Mirrors the format logic in ``fetchers.MouserFetcher._parse_price`` but
-    accepts the wider variety of strings the XLS export emits (with or
-    without currency glyph, sometimes a non-breaking space).  Returns 0.0
-    on empty/None input.
+    Real input shape — the Mouser XLS ``Price (EUR)`` column is the only
+    call site, always emitting European convention (comma = decimal, dot
+    = thousands): ``"€ 0,381"``, ``"€ 1,16"``, ``"€ 1.234,56"``.
+
+    Disambiguation rules:
+      - Multi-group thousands separators (``"1,234,567"`` or
+        ``"1.234.567"``) are detected explicitly — no locale uses two or
+        more decimal separators, so these are unambiguously thousands.
+      - Single-group forms like ``"0,381"`` or ``"1,234"`` are
+        syntactically ambiguous; we interpret comma as decimal because
+        that matches the Mouser-EUR column convention.
+
+    Returns 0.0 for empty/None input. Mirrors
+    ``fetchers.MouserFetcher._parse_price`` but tolerates more whitespace
+    / glyph variants that show up in XLS exports.
     """
     if price_str is None:
         return 0.0
     cleaned = re.sub(r"[^\d,.]", "", str(price_str).strip())
     if not cleaned:
         return 0.0
+
+    # Unambiguous multi-group thousands separators. Match these first so
+    # that values like "1,234,567" are not misread as decimals by the
+    # last-separator heuristic below.
+    if re.fullmatch(r"\d{1,3}(,\d{3}){2,}", cleaned):
+        return float(cleaned.replace(",", ""))
+    if re.fullmatch(r"\d{1,3}(\.\d{3}){2,}", cleaned):
+        return float(cleaned.replace(".", ""))
+
     last_comma = cleaned.rfind(",")
     last_dot = cleaned.rfind(".")
     if last_comma > last_dot:
