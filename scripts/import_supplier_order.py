@@ -152,9 +152,9 @@ def _import_one_order(
         # category name. Action prefix "DRY_RUN_" is stripped so the
         # printed report reads cleanly.
         action_clean = report.action.removeprefix("DRY_RUN_")
-        action_kind = "CREATE" if action_clean in ("CREATED", "RECONCILED", "CREATE", "RECONCILE") else "REUSE"
+        action_kind = "CREATE" if action_clean in ("CREATE", "RECONCILE") else "REUSE"
         reporter.record(
-            action_kind, "PurchaseOrder", order.reference,
+            action_kind, "PurchaseOrder", report.po_reference,
             f"{action_clean} added={report.lines_added} "
             f"updated={report.lines_updated} deleted={report.lines_deleted}",
         )

@@ -138,6 +138,52 @@ def test_dry_run_instantiates_reporter_and_prints_report(tmp_path, monkeypatch):
     # ensure_part_for_order_line must receive the reporter as kwarg
     assert epfol.call_count == 1
     assert epfol.call_args.kwargs.get("reporter") is reporter_instance
+    # action_kind mapping: DRY_RUN_CREATE → CREATE
+    reporter_instance.record.assert_called_once_with(
+        "CREATE", "PurchaseOrder", "WM",
+        "CREATE added=1 updated=0 deleted=0",
+    )
+
+
+def test_dry_run_in_sync_records_reuse(tmp_path, monkeypatch):
+    """Pfad C in-sync (PO COMPLETE + matches file) → reporter records REUSE."""
+    csv_file = tmp_path / "LCSC__WM_1.csv"
+    csv_file.write_text(
+        "LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,"
+        "Package,Description,RoHS,Quantity,Unit Price($),Ext.Price($),"
+        "Estimated lead time (business days),Updated lead time,"
+        "Date Code / Lot No.\n"
+        "C1,MPN1,M1,,0805,desc,YES,5,0.1,0.5,,,\n"
+    )
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    with patch("import_supplier_order.InvenTreeAPI"), \
+         patch("import_supplier_order.LCSCFetcher"), \
+         patch("import_supplier_order.MouserFetcher"), \
+         patch("import_supplier_order.get_or_create_supplier") as gos, \
+         patch("import_supplier_order.get_receive_location") as grl, \
+         patch("import_supplier_order.ensure_part_for_order_line") as epfol, \
+         patch("import_supplier_order.upsert_purchase_order") as upsert, \
+         patch("import_supplier_order.load_category_map", return_value={}), \
+         patch("import_supplier_order.DryRunReporter") as reporter_cls:
+        reporter_instance = MagicMock()
+        reporter_instance.records = []
+        reporter_cls.return_value = reporter_instance
+        gos.return_value = MagicMock(pk=1)
+        grl.return_value = MagicMock(pk=7)
+        epfol.return_value = (None, None)
+        upsert.return_value = MagicMock(
+            action="IN_SYNC", po_reference="WM",
+            lines_added=0, lines_updated=0, lines_deleted=0,
+        )
+        rc = cli.main(["--lcsc-csv", str(csv_file), "--dry-run"])
+
+    assert rc == 0
+    reporter_instance.record.assert_called_once_with(
+        "REUSE", "PurchaseOrder", "WM",
+        "IN_SYNC added=0 updated=0 deleted=0",
+    )
 
 
 def test_real_run_does_not_instantiate_reporter(tmp_path, monkeypatch):
