@@ -8,3 +8,4 @@ Pillow==12.2.0
 numpy==2.4.4
 cairosvg==2.9.0
 PyYAML==6.0.3
+xlrd==2.0.1
