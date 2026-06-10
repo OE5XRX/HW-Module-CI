@@ -374,11 +374,14 @@ def ensure_part_for_order_line(
     than silently NPE-ing inside the dedup chain.
 
     Dry-run (``reporter is not None``): all read-only lookups still run
-    (SKU → fetcher → MPN+Mfr → Name) but every write side-effect
+    (SKU → fetcher → MPN+Mfr → Name) but every dependent call
     (``ensure_supplier_parts``, ``resolve_part_category``,
     ``create_part_in_inventree``, ``_lookup_supplier_part``) is replaced by
-    a ``reporter.record(...)`` call and the function returns
-    ``(None, None)``. Caller MUST tolerate the nullable return.
+    a ``reporter.record(...)`` call and the function returns ``(None, None)``.
+    Note: ``_lookup_supplier_part`` is a read-only SKU→SupplierPart lookup,
+    not a write — it is skipped in dry-run because the function returns
+    ``None`` for the SupplierPart, making the lookup unnecessary.
+    Caller MUST tolerate the nullable return.
     """
     if supplier_kind not in ("LCSC", "Mouser"):
         raise ValueError(

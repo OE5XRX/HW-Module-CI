@@ -454,7 +454,10 @@ def test_dry_run_fetcher_failure_still_records_create_using_file_data():
     with patch("inventree_sync.order_import.find_existing_part") as fe, \
          patch("inventree_sync.order_import.find_part_by_mpn_and_manufacturer") as fmpn, \
          patch("inventree_sync.order_import.find_part_by_name") as fname, \
-         patch("inventree_sync.order_import.create_part_in_inventree") as create:
+         patch("inventree_sync.order_import.ensure_supplier_parts") as esp, \
+         patch("inventree_sync.order_import.create_part_in_inventree") as create, \
+         patch("inventree_sync.order_import.resolve_part_category") as rcat, \
+         patch("inventree_sync.order_import._lookup_supplier_part") as lookup_sp:
         fe.return_value = None
         fmpn.return_value = None
         fname.return_value = None
@@ -467,7 +470,10 @@ def test_dry_run_fetcher_failure_still_records_create_using_file_data():
         )
 
     assert part is None and sp is None
+    rcat.assert_not_called()
     create.assert_not_called()
+    esp.assert_not_called()
+    lookup_sp.assert_not_called()
     assert len(reporter.records) == 1
     r = reporter.records[0]
     assert r.action == "CREATE"
