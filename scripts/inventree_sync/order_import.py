@@ -647,22 +647,30 @@ def _next_po_reference(api: InvenTreeAPI) -> str:
         ) from exc
 
 
-def _find_po(api: InvenTreeAPI, supplier_pk: int, reference: str):
-    matches = PurchaseOrder.list(api, supplier=supplier_pk, reference=reference)
+def _find_po(api: InvenTreeAPI, supplier_pk: int, supplier_reference: str):
+    """Locate a PurchaseOrder by supplier + supplier_reference.
+
+    The server-side ``?supplier_reference=`` filter is silently ignored
+    (verified empirically against InvenTree 1.3.4 — all POs for the
+    supplier come back regardless of the filter value), so we list all
+    POs for the supplier and post-filter on supplier_reference. Same
+    defensive pattern as ``find_part_by_name`` in ``client.py``.
+
+    The supplier= filter is also post-filtered: some InvenTree versions
+    serialize FKs as strings, so we coerce to int before comparing and
+    skip the check when the value isn't numeric (test mocks treat the
+    server-side filter as authoritative in that case).
+
+    Returns the first match (or None). Multiple matches are not
+    expected — supplier_reference is the operational identifier — and
+    we don't warn on them to keep the path simple; in practice a
+    duplicate would be a data-quality issue the operator should resolve
+    in the UI.
+    """
+    matches = PurchaseOrder.list(api, supplier=supplier_pk)
     for po in matches:
-        # Post-filter — server may ignore the reference= and/or supplier=
-        # filters (same defensive pattern as find_part_by_name in client.py).
-        # Only reject when the PO's value is a concrete primitive that differs
-        # from the target; tolerate non-primitive types (test mocks) so the
-        # server-side filter is treated as authoritative.
-        po_ref = getattr(po, "reference", None)
-        if isinstance(po_ref, str) and po_ref != reference:
-            continue
+        # Supplier post-filter (defensive, same as before).
         po_supplier = getattr(po, "supplier", None)
-        # The InvenTree client may serialize foreign keys as int or str —
-        # coerce both sides to int before comparing. Skip the check entirely
-        # if the value isn't numeric (test mocks); server-side filter is then
-        # treated as authoritative.
         if po_supplier is not None and not isinstance(po_supplier, bool):
             try:
                 po_supplier_pk = int(po_supplier)
@@ -670,7 +678,10 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, reference: str):
                 po_supplier_pk = None
             if po_supplier_pk is not None and po_supplier_pk != supplier_pk:
                 continue
-        return po
+        # supplier_reference post-filter (the actual identifier).
+        po_supplier_ref = str(getattr(po, "supplier_reference", "") or "")
+        if po_supplier_ref == supplier_reference:
+            return po
     return None
 
 
@@ -712,7 +723,7 @@ def upsert_purchase_order(
             len(deduped_lines),
         )
 
-    existing = _find_po(api, supplier.pk, order.reference)
+    existing = _find_po(api, supplier.pk, supplier_reference=order.reference)
 
     if existing is None:
         # Pfad A

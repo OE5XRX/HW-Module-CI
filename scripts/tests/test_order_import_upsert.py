@@ -28,10 +28,12 @@ def _supplier_part(pk, sku):
     return sp
 
 
-def _po(status=10, lines=None):
+def _po(status=10, lines=None, supplier_reference="275708282"):
     po = MagicMock()
     po.pk = 999
     po.status = status
+    po.supplier = 1
+    po.supplier_reference = supplier_reference
     po.getLineItems.return_value = lines or []
     return po
 
@@ -69,6 +71,8 @@ def test_path_a_creates_po_and_lines_and_receives():
     create_kwargs = PO.create.call_args[0][1]
     assert create_kwargs["supplier"] == 1
     assert create_kwargs["reference"] == "275708282"
+    # Note: assertion on reference value will be updated in Task 3 when
+    # Pfad A starts using server-assigned references.
 
     assert new_po.addLineItem.call_count == 2
     new_po.issue.assert_called_once()
@@ -126,7 +130,7 @@ def test_path_b_updates_qty_change():
     existing_li.quantity = 10; existing_li.purchase_price = 1.0
     existing_li.part = 101
 
-    existing_po = _po(status=20, lines=[existing_li])
+    existing_po = _po(status=20, lines=[existing_li], supplier_reference="X")
 
     with patch("inventree_sync.order_import.PurchaseOrder") as PO:
         PO.list.return_value = [existing_po]
@@ -157,7 +161,7 @@ def test_path_b_deletes_extra_line():
     li_c.pk = 2; li_c.reference = "C"; li_c.quantity = 3
     li_c.purchase_price = 0.5; li_c.part = 103; li_c.received = 0
 
-    existing_po = _po(status=20, lines=[li_a, li_c])
+    existing_po = _po(status=20, lines=[li_a, li_c], supplier_reference="X")
 
     with patch("inventree_sync.order_import.PurchaseOrder") as PO:
         PO.list.return_value = [existing_po]
@@ -187,7 +191,7 @@ def test_path_b_refuses_to_delete_partially_received_line():
     li_c.pk = 2; li_c.reference = "C"; li_c.quantity = 3
     li_c.purchase_price = 0.5; li_c.part = 103; li_c.received = 2  # partial
 
-    existing_po = _po(status=20, lines=[li_a, li_c])
+    existing_po = _po(status=20, lines=[li_a, li_c], supplier_reference="X")
 
     with patch("inventree_sync.order_import.PurchaseOrder") as PO:
         PO.list.return_value = [existing_po]
@@ -435,3 +439,46 @@ def test_next_po_reference_raises_when_options_request_fails():
     # tell which InvenTree instance failed.
     assert "http://test.example/order/po/" in str(exc_info.value)
     assert "Failed to read next PurchaseOrder.reference" in str(exc_info.value)
+
+
+def test_find_po_post_filters_by_supplier_reference():
+    """Server-side supplier_reference= filter is ignored; we post-filter."""
+    from inventree_sync.order_import import _find_po
+
+    # Three POs returned (server ignored the filter)
+    po_match = MagicMock()
+    po_match.pk = 2
+    po_match.supplier = 259
+    po_match.supplier_reference = "275708282"
+    po_other_supplier_ref = MagicMock()
+    po_other_supplier_ref.pk = 3
+    po_other_supplier_ref.supplier = 259
+    po_other_supplier_ref.supplier_reference = "WM2504270070"
+    po_other_supplier = MagicMock()
+    po_other_supplier.pk = 1
+    po_other_supplier.supplier = 258  # different supplier
+    po_other_supplier.supplier_reference = "275708282"
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO:
+        PO.list.return_value = [
+            po_match, po_other_supplier_ref, po_other_supplier,
+        ]
+        result = _find_po(MagicMock(), supplier_pk=259,
+                          supplier_reference="275708282")
+
+    assert result is po_match
+
+
+def test_find_po_returns_none_when_no_match():
+    """No PO has matching supplier_reference → None."""
+    from inventree_sync.order_import import _find_po
+
+    po1 = MagicMock(); po1.supplier = 259; po1.supplier_reference = "OTHER"
+    po2 = MagicMock(); po2.supplier = 259; po2.supplier_reference = "SOMETHING-ELSE"
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO:
+        PO.list.return_value = [po1, po2]
+        result = _find_po(MagicMock(), supplier_pk=259,
+                          supplier_reference="275708282")
+
+    assert result is None
