@@ -36,6 +36,7 @@ from .client import (
     find_part_by_mpn_and_manufacturer,
     find_part_by_name,
 )
+from .dry_run import DryRunReporter
 from .fetchers import LCSCFetcher, MouserFetcher
 from .models import PartData
 
@@ -349,7 +350,9 @@ def ensure_part_for_order_line(
     lcsc_supplier: Optional[Company],
     mouser_supplier: Optional[Company],
     category_map: dict,
-) -> tuple[Part, SupplierPart]:
+    *,
+    reporter: Optional[DryRunReporter] = None,
+) -> tuple[Optional[Part], Optional[SupplierPart]]:
     """Resolve a line to (Part, SupplierPart), creating both if needed.
 
     Dedup chain (same priority as part_manager.ensure_parts_exist):
@@ -369,6 +372,13 @@ def ensure_part_for_order_line(
     side matching ``supplier_kind`` MUST be non-None — this is enforced at
     the top of the function so misuse fails loud at the call site rather
     than silently NPE-ing inside the dedup chain.
+
+    Dry-run (``reporter is not None``): all read-only lookups still run
+    (SKU → fetcher → MPN+Mfr → Name) but every write side-effect
+    (``ensure_supplier_parts``, ``resolve_part_category``,
+    ``create_part_in_inventree``, ``_lookup_supplier_part``) is replaced by
+    a ``reporter.record(...)`` call and the function returns
+    ``(None, None)``. Caller MUST tolerate the nullable return.
     """
     if supplier_kind not in ("LCSC", "Mouser"):
         raise ValueError(
@@ -393,9 +403,15 @@ def ensure_part_for_order_line(
     # 1. SKU lookup
     existing = find_existing_part(api, lcsc_skus, mouser_skus)
     if existing is not None:
+        if reporter is not None:
+            reporter.record(
+                "REUSE", "Parts", line.sku,
+                f"existing pk={existing.pk}",
+            )
+            return None, None
         return existing, _lookup_supplier_part(api, line.sku)
 
-    # 2. Supplier fetch
+    # 2. Supplier fetch (read-only; runs in dry-run too)
     if is_lcsc:
         part_data = lcsc_fetcher.fetch_by_sku(line.sku)
     else:
@@ -418,6 +434,12 @@ def ensure_part_for_order_line(
     if mpn and mfr:
         by_mpn = find_part_by_mpn_and_manufacturer(api, mpn, mfr)
         if by_mpn is not None:
+            if reporter is not None:
+                reporter.record(
+                    "REUSE", "Parts", line.sku,
+                    f"via MPN+Mfr pk={by_mpn.pk}",
+                )
+                return None, None
             ensure_supplier_parts(
                 api, by_mpn, part_data,
                 lcsc_supplier, mouser_supplier,
@@ -429,6 +451,12 @@ def ensure_part_for_order_line(
     name = (part_data.mpn or line.mpn or line.sku).strip()
     by_name = find_part_by_name(api, name)
     if by_name is not None:
+        if reporter is not None:
+            reporter.record(
+                "REUSE", "Parts", line.sku,
+                f"via name {name!r} pk={by_name.pk}",
+            )
+            return None, None
         ensure_supplier_parts(
             api, by_name, part_data,
             lcsc_supplier, mouser_supplier,
@@ -437,6 +465,12 @@ def ensure_part_for_order_line(
         return by_name, _lookup_supplier_part(api, line.sku)
 
     # 5. Create
+    if reporter is not None:
+        reporter.record(
+            "CREATE", "Parts", line.sku,
+            f"name={name!r}",
+        )
+        return None, None
     category = resolve_part_category(
         api, "", part_data, line.package, category_map,
     )

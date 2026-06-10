@@ -272,3 +272,204 @@ def test_unused_side_may_be_none():
         )
     assert part.pk == 606
     assert sp.pk == 99
+
+
+# ---------------------------------------------------------------------------
+# Dry-run path tests (reporter passed in → no writes, only records)
+# ---------------------------------------------------------------------------
+
+from inventree_sync.dry_run import DryRunReporter  # noqa: E402
+
+
+def _supplier_setup():
+    """Fresh fetcher / supplier mocks used across dry-run tests."""
+    lcsc_fetcher = MagicMock()
+    mouser_fetcher = MagicMock()
+    lcsc_supplier = MagicMock(); lcsc_supplier.pk = 1; lcsc_supplier.name = "LCSC"
+    mouser_supplier = MagicMock(); mouser_supplier.pk = 2; mouser_supplier.name = "Mouser"
+    return lcsc_fetcher, mouser_fetcher, lcsc_supplier, mouser_supplier
+
+
+def test_dry_run_sku_hit_records_reuse_and_no_writes():
+    """SKU lookup hit → REUSE record, no ensure_supplier_parts/create_part call."""
+    line, supplier_kind = _line()
+    lcsc_fetcher, mouser_fetcher, lcsc_supplier, mouser_supplier = _supplier_setup()
+    reporter = DryRunReporter()
+
+    with patch("inventree_sync.order_import.find_existing_part") as find_exist, \
+         patch("inventree_sync.order_import._lookup_supplier_part") as lookup_sp, \
+         patch("inventree_sync.order_import.ensure_supplier_parts") as esp, \
+         patch("inventree_sync.order_import.create_part_in_inventree") as create, \
+         patch("inventree_sync.order_import.resolve_part_category") as rcat:
+        find_exist.return_value = _part_mock(pk=101)
+        part, sp = ensure_part_for_order_line(
+            MagicMock(), line, supplier_kind,
+            lcsc_fetcher, mouser_fetcher,
+            lcsc_supplier, mouser_supplier,
+            category_map={},
+            reporter=reporter,
+        )
+
+    assert part is None and sp is None
+    lookup_sp.assert_not_called()
+    esp.assert_not_called()
+    create.assert_not_called()
+    rcat.assert_not_called()
+    assert len(reporter.records) == 1
+    r = reporter.records[0]
+    assert r.action == "REUSE"
+    assert r.category == "Parts"
+    assert r.target == line.sku
+    assert "pk=101" in r.detail
+
+
+def test_dry_run_mpn_hit_records_reuse_via_mpn_and_no_writes():
+    """MPN+Mfr hit → REUSE record mentioning MPN, no ensure_supplier_parts call."""
+    line, supplier_kind = _line()
+    lcsc_fetcher, mouser_fetcher, lcsc_supplier, mouser_supplier = _supplier_setup()
+    lcsc_fetcher.fetch_by_sku.return_value = PartData(
+        mpn="0805B333K500NT", manufacturer="FH",
+        description="33nF", lcsc_sku="C1739",
+    )
+    reporter = DryRunReporter()
+
+    with patch("inventree_sync.order_import.find_existing_part") as fe, \
+         patch("inventree_sync.order_import.find_part_by_mpn_and_manufacturer") as fmpn, \
+         patch("inventree_sync.order_import.find_part_by_name") as fname, \
+         patch("inventree_sync.order_import.ensure_supplier_parts") as esp, \
+         patch("inventree_sync.order_import.create_part_in_inventree") as create, \
+         patch("inventree_sync.order_import.resolve_part_category") as rcat, \
+         patch("inventree_sync.order_import._lookup_supplier_part") as lookup_sp:
+        fe.return_value = None
+        fmpn.return_value = _part_mock(pk=202)
+        part, sp = ensure_part_for_order_line(
+            MagicMock(), line, supplier_kind,
+            lcsc_fetcher, mouser_fetcher,
+            lcsc_supplier, mouser_supplier,
+            category_map={},
+            reporter=reporter,
+        )
+
+    assert part is None and sp is None
+    fname.assert_not_called()         # MPN-Hit short-circuits before name lookup
+    esp.assert_not_called()
+    create.assert_not_called()
+    rcat.assert_not_called()
+    lookup_sp.assert_not_called()
+    assert len(reporter.records) == 1
+    r = reporter.records[0]
+    assert r.action == "REUSE"
+    assert "MPN+Mfr" in r.detail
+    assert "pk=202" in r.detail
+
+
+def test_dry_run_name_hit_records_reuse_via_name_and_no_writes():
+    """Name lookup hit → REUSE record mentioning name, no ensure_supplier_parts call."""
+    line, supplier_kind = _line()
+    lcsc_fetcher, mouser_fetcher, lcsc_supplier, mouser_supplier = _supplier_setup()
+    lcsc_fetcher.fetch_by_sku.return_value = PartData(
+        mpn="0805B333K500NT", manufacturer="FH",
+        description="33nF", lcsc_sku="C1739",
+    )
+    reporter = DryRunReporter()
+
+    with patch("inventree_sync.order_import.find_existing_part") as fe, \
+         patch("inventree_sync.order_import.find_part_by_mpn_and_manufacturer") as fmpn, \
+         patch("inventree_sync.order_import.find_part_by_name") as fname, \
+         patch("inventree_sync.order_import.ensure_supplier_parts") as esp, \
+         patch("inventree_sync.order_import.create_part_in_inventree") as create, \
+         patch("inventree_sync.order_import.resolve_part_category") as rcat, \
+         patch("inventree_sync.order_import._lookup_supplier_part") as lookup_sp:
+        fe.return_value = None
+        fmpn.return_value = None
+        fname.return_value = _part_mock(pk=303)
+        part, sp = ensure_part_for_order_line(
+            MagicMock(), line, supplier_kind,
+            lcsc_fetcher, mouser_fetcher,
+            lcsc_supplier, mouser_supplier,
+            category_map={},
+            reporter=reporter,
+        )
+
+    assert part is None and sp is None
+    esp.assert_not_called()
+    create.assert_not_called()
+    rcat.assert_not_called()
+    lookup_sp.assert_not_called()
+    assert len(reporter.records) == 1
+    r = reporter.records[0]
+    assert r.action == "REUSE"
+    assert "name" in r.detail.lower()
+    assert "pk=303" in r.detail
+
+
+def test_dry_run_create_records_create_and_no_writes():
+    """No lookup hit → CREATE record with planned name, no actual create."""
+    line, supplier_kind = _line()
+    lcsc_fetcher, mouser_fetcher, lcsc_supplier, mouser_supplier = _supplier_setup()
+    lcsc_fetcher.fetch_by_sku.return_value = PartData(
+        mpn="0805B333K500NT", manufacturer="FH",
+        description="33nF", lcsc_sku="C1739",
+    )
+    reporter = DryRunReporter()
+
+    with patch("inventree_sync.order_import.find_existing_part") as fe, \
+         patch("inventree_sync.order_import.find_part_by_mpn_and_manufacturer") as fmpn, \
+         patch("inventree_sync.order_import.find_part_by_name") as fname, \
+         patch("inventree_sync.order_import.ensure_supplier_parts") as esp, \
+         patch("inventree_sync.order_import.create_part_in_inventree") as create, \
+         patch("inventree_sync.order_import.resolve_part_category") as rcat, \
+         patch("inventree_sync.order_import._lookup_supplier_part") as lookup_sp:
+        fe.return_value = None
+        fmpn.return_value = None
+        fname.return_value = None
+        part, sp = ensure_part_for_order_line(
+            MagicMock(), line, supplier_kind,
+            lcsc_fetcher, mouser_fetcher,
+            lcsc_supplier, mouser_supplier,
+            category_map={},
+            reporter=reporter,
+        )
+
+    assert part is None and sp is None
+    rcat.assert_not_called()
+    create.assert_not_called()
+    esp.assert_not_called()
+    lookup_sp.assert_not_called()
+    assert len(reporter.records) == 1
+    r = reporter.records[0]
+    assert r.action == "CREATE"
+    assert r.category == "Parts"
+    assert r.target == line.sku
+    assert "0805B333K500NT" in r.detail   # planned name = part_data.mpn
+
+
+def test_dry_run_fetcher_failure_still_records_create_using_file_data():
+    """Supplier API None → fallback PartData → CREATE record from file row mpn."""
+    line, supplier_kind = _line()
+    lcsc_fetcher, mouser_fetcher, lcsc_supplier, mouser_supplier = _supplier_setup()
+    lcsc_fetcher.fetch_by_sku.return_value = None   # supplier API down
+    reporter = DryRunReporter()
+
+    with patch("inventree_sync.order_import.find_existing_part") as fe, \
+         patch("inventree_sync.order_import.find_part_by_mpn_and_manufacturer") as fmpn, \
+         patch("inventree_sync.order_import.find_part_by_name") as fname, \
+         patch("inventree_sync.order_import.create_part_in_inventree") as create:
+        fe.return_value = None
+        fmpn.return_value = None
+        fname.return_value = None
+        part, sp = ensure_part_for_order_line(
+            MagicMock(), line, supplier_kind,
+            lcsc_fetcher, mouser_fetcher,
+            lcsc_supplier, mouser_supplier,
+            category_map={},
+            reporter=reporter,
+        )
+
+    assert part is None and sp is None
+    create.assert_not_called()
+    assert len(reporter.records) == 1
+    r = reporter.records[0]
+    assert r.action == "CREATE"
+    # Name fallback: part_data.mpn (None) → line.mpn ("0805B333K500NT")
+    assert "0805B333K500NT" in r.detail
