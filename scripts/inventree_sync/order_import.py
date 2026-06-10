@@ -607,6 +607,7 @@ _STATUS_PLACED = 20
 _STATUS_COMPLETE = 30
 _STOCK_STATUS_OK = 10  # InvenTree StockItem status code "OK"
 _PRICE_EPSILON = 1e-6  # tolerance for float price comparison
+_DRY_RUN_SERVER_ASSIGNED = "(server-assigned)"  # placeholder when the real ref would mutate
 
 
 @dataclass
@@ -616,7 +617,7 @@ class UpsertReport:
     *po_reference* holds the InvenTree PurchaseOrder.reference — i.e. the
     server-assigned sequence value (e.g. ``"PO-0006"``), not the supplier-
     side order ID (which lives in ``PurchaseOrder.supplier_reference``).
-    For dry-run Pfad A this is ``"(server-assigned)"`` because we skip
+    For dry-run Pfad A this is ``_DRY_RUN_SERVER_ASSIGNED`` because we skip
     the OPTIONS probe in dry-run mode (the value mutates between runs).
     """
     action: str               # CREATED | RECONCILED | IN_SYNC | DRY_RUN_*
@@ -743,13 +744,17 @@ def upsert_purchase_order(
             # advances the sequence). "(server-assigned)" is honest about
             # what the operator will see in the InvenTree UI.
             return UpsertReport(
-                action="DRY_RUN_CREATE", po_reference="(server-assigned)",
+                action="DRY_RUN_CREATE", po_reference=_DRY_RUN_SERVER_ASSIGNED,
                 lines_added=len(deduped_lines),
             )
         next_ref = _next_po_reference(api)
         po = PurchaseOrder.create(api, {
             "supplier": supplier.pk,
             "reference": next_ref,
+            # supplier_reference: structured queryable field used by _find_po
+            #   for idempotency on re-runs.
+            # description: human-readable provenance trail visible in the
+            #   InvenTree UI alongside the supplier name.
             "supplier_reference": order.reference,
             "description": f"Imported from {order.supplier_name} order {order.reference}",
             **({"target_date": order.order_date} if order.order_date else {}),
@@ -779,7 +784,7 @@ def upsert_purchase_order(
         if diff.is_empty:
             logger.info("PO %s already COMPLETE and matches file — no-op.",
                         order.reference)
-            return UpsertReport(action="IN_SYNC", po_reference=order.reference)
+            return UpsertReport(action="IN_SYNC", po_reference=str(getattr(existing, "reference", "") or "") or order.reference)
         raise RuntimeError(
             f"PO {order.reference} ({order.supplier_name}) is COMPLETE but "
             f"differs from the source file:\n"
@@ -809,7 +814,7 @@ def upsert_purchase_order(
 
     if dry_run:
         return UpsertReport(
-            action="DRY_RUN_RECONCILE", po_reference=order.reference,
+            action="DRY_RUN_RECONCILE", po_reference=str(getattr(existing, "reference", "") or "") or order.reference,
             lines_added=len(diff.to_add),
             lines_updated=len(diff.to_update),
             lines_deleted=len(diff.to_delete),
@@ -837,7 +842,7 @@ def upsert_purchase_order(
     existing.receiveAll(location=receive_location.pk, status=_STOCK_STATUS_OK)
 
     return UpsertReport(
-        action="RECONCILED", po_reference=order.reference,
+        action="RECONCILED", po_reference=str(getattr(existing, "reference", "") or "") or order.reference,
         lines_added=len(diff.to_add),
         lines_updated=len(diff.to_update),
         lines_deleted=len(diff.to_delete),

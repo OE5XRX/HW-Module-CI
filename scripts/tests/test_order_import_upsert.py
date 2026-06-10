@@ -352,10 +352,12 @@ def test_path_a_dedups_duplicate_sku_rows_last_wins():
             receive_location=MagicMock(pk=7),
         )
 
+    # Exactly two addLineItem calls — one per unique SKU
     assert new_po.addLineItem.call_count == 2
     calls = new_po.addLineItem.call_args_list
     skus_added = {c.kwargs["reference"] for c in calls}
     assert skus_added == {"A", "B"}
+    # Last-wins: A is added with qty=99 / price=9.9, not the first row's 10/1.0
     a_call = next(c for c in calls if c.kwargs["reference"] == "A")
     assert a_call.kwargs["quantity"] == 99
     assert a_call.kwargs["purchase_price"] == 9.9
@@ -581,3 +583,4 @@ def test_upsert_path_b_finds_existing_via_supplier_reference():
     existing_po.addLineItem.assert_not_called()
     existing_po.receiveAll.assert_called_once()
     assert report.action == "RECONCILED"
+    assert report.po_reference == "PO-0001"
