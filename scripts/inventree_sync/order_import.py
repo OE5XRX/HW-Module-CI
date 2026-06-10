@@ -636,10 +636,14 @@ def _next_po_reference(api: InvenTreeAPI) -> str:
         resp = api.request(PurchaseOrder.URL, method="OPTIONS")
         body = resp.json()
         return body["actions"]["POST"]["reference"]["default"]
+    # Broad except is intentional: HTTPError/ConnectionError/KeyError/TypeError/
+    # JSONDecodeError all map to the same caller-visible contract — fail loud.
     except Exception as exc:
+        host = getattr(api, "base_url", "<unknown>")
         raise RuntimeError(
             f"Failed to read next PurchaseOrder.reference from "
-            f"OPTIONS {PurchaseOrder.URL}: {exc}"
+            f"OPTIONS {host}{PurchaseOrder.URL} "
+            f"(expected actions.POST.reference.default): {exc}"
         ) from exc
 
 

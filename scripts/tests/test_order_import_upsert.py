@@ -383,14 +383,12 @@ def test_path_a_dry_run_dedup_reports_unique_count():
 # Server-side reference auto-assignment (PR fix/use-supplier-reference)
 # ---------------------------------------------------------------------------
 
-import pytest as _pytest_for_next_ref  # avoid shadow if pytest already imported
-
-
 def test_next_po_reference_reads_default_from_options():
     """OPTIONS /api/order/po/ → actions.POST.reference.default is the next sequence value."""
     from inventree_sync.order_import import _next_po_reference
 
     api = MagicMock()
+    api.base_url = "http://test.example/"
     resp = MagicMock()
     resp.json.return_value = {
         "actions": {
@@ -414,11 +412,12 @@ def test_next_po_reference_raises_when_default_missing():
     from inventree_sync.order_import import _next_po_reference
 
     api = MagicMock()
+    api.base_url = "http://test.example/"
     resp = MagicMock()
     resp.json.return_value = {"actions": {"POST": {}}}
     api.request.return_value = resp
 
-    with _pytest_for_next_ref.raises(RuntimeError, match="reference"):
+    with pytest.raises(RuntimeError, match=r"actions\.POST\.reference\.default"):
         _next_po_reference(api)
 
 
@@ -427,7 +426,12 @@ def test_next_po_reference_raises_when_options_request_fails():
     from inventree_sync.order_import import _next_po_reference
 
     api = MagicMock()
+    api.base_url = "http://test.example/"
     api.request.side_effect = ConnectionError("server unreachable")
 
-    with _pytest_for_next_ref.raises(RuntimeError, match="OPTIONS"):
+    with pytest.raises(RuntimeError) as exc_info:
         _next_po_reference(api)
+    # Host + relative path both present so operators chasing alerts can
+    # tell which InvenTree instance failed.
+    assert "http://test.example/order/po/" in str(exc_info.value)
+    assert "Failed to read next PurchaseOrder.reference" in str(exc_info.value)
