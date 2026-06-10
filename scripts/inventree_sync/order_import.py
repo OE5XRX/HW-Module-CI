@@ -555,8 +555,17 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, reference: str):
         if isinstance(po_ref, str) and po_ref != reference:
             continue
         po_supplier = getattr(po, "supplier", None)
-        if isinstance(po_supplier, int) and po_supplier != supplier_pk:
-            continue
+        # The InvenTree client may serialize foreign keys as int or str —
+        # coerce both sides to int before comparing. Skip the check entirely
+        # if the value isn't numeric (test mocks); server-side filter is then
+        # treated as authoritative.
+        if po_supplier is not None and not isinstance(po_supplier, bool):
+            try:
+                po_supplier_pk = int(po_supplier)
+            except (TypeError, ValueError):
+                po_supplier_pk = None
+            if po_supplier_pk is not None and po_supplier_pk != supplier_pk:
+                continue
         return po
     return None
 
@@ -635,6 +644,24 @@ def upsert_purchase_order(
         )
 
     # Pfad B
+    # Guard against deleting partially-received lines — would orphan StockItems
+    # or fail at the API layer. Run BEFORE any add/update mutation so a
+    # rejected reconcile leaves the PO untouched (atomic-or-nothing).
+    partial = [li for li in diff.to_delete
+               if int(getattr(li, "received", 0) or 0) > 0]
+    if partial:
+        details = ", ".join(
+            f"{getattr(li, 'reference', '') or f'line#{li.pk}'} "
+            f"(received={int(getattr(li, 'received', 0) or 0)})"
+            for li in partial
+        )
+        raise RuntimeError(
+            f"PO {order.reference} ({order.supplier_name}) has line item(s) "
+            f"with received stock that the source file no longer lists: "
+            f"{details}. Resolve manually in the InvenTree UI (delete the "
+            f"StockItems and the line, or restore the line in the source file)."
+        )
+
     if dry_run:
         return UpsertReport(
             action="DRY_RUN_RECONCILE", po_reference=order.reference,
@@ -657,23 +684,6 @@ def upsert_purchase_order(
             "quantity": upd.new_quantity,
             "purchase_price": upd.new_price,
         })
-    # Guard against deleting partially-received lines — would orphan StockItems
-    # or fail at the API layer. Fail loud so the operator resolves manually
-    # (matches the Pfad-C policy for COMPLETE-PO drift).
-    partial = [li for li in diff.to_delete
-               if int(getattr(li, "received", 0) or 0) > 0]
-    if partial:
-        details = ", ".join(
-            f"{getattr(li, 'reference', '') or f'line#{li.pk}'} "
-            f"(received={int(getattr(li, 'received', 0) or 0)})"
-            for li in partial
-        )
-        raise RuntimeError(
-            f"PO {order.reference} ({order.supplier_name}) has line item(s) "
-            f"with received stock that the source file no longer lists: "
-            f"{details}. Resolve manually in the InvenTree UI (delete the "
-            f"StockItems and the line, or restore the line in the source file)."
-        )
     for li in diff.to_delete:
         li.delete()
 

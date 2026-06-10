@@ -66,10 +66,16 @@ def _suppress_category_warning() -> None:
     Otherwise every part imported (50+ at typical run) emits one of these,
     drowning out actionable logs. We expect empty kicad_part for supplier
     imports — that's by design.
+
+    Mutates the LogRecord level rather than dropping it, so the message
+    stays visible under `--log-level DEBUG` for troubleshooting.
     """
     class _F(logging.Filter):
         def filter(self, record):
-            return "not found in category map" not in record.getMessage()
+            if "not found in category map" in record.getMessage():
+                record.levelno = logging.DEBUG
+                record.levelname = "DEBUG"
+            return True
     logging.getLogger("inventree_sync.categories").addFilter(_F())
 
 
