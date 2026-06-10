@@ -139,6 +139,43 @@ scripts/
   tests/                           # pytest suite for the helper scripts
 ```
 
+## Importing historical supplier orders
+
+`scripts/import_supplier_order.py` migrates Mouser-XLS or LCSC-CSV order
+files into InvenTree as PurchaseOrders with received StockItems. Reuses
+`inventree_sync`'s part-dedup/create primitives.
+
+```bash
+export INVENTREE_API_HOST=https://inventree.example.org
+export INVENTREE_API_TOKEN=...
+export MOUSER_API_KEY=...
+
+# Dry-run: print what would happen, no writes
+python3 scripts/import_supplier_order.py \
+    --mouser-xls ~/orders/275708282.xls \
+    --lcsc-csv ~/orders/LCSC__WM2504270070_20260610043835.csv \
+    --dry-run
+
+# Real run
+python3 scripts/import_supplier_order.py \
+    --mouser-xls ~/orders/275708282.xls \
+    --lcsc-csv ~/orders/LCSC__WM2504270070_20260610043835.csv
+```
+
+(`--lcsc-csv` takes a single file path. LCSC exports include a timestamp
+suffix; pass the exact filename rather than a shell glob.)
+
+The file (XLS/CSV) is **source of truth** on re-runs:
+
+| State of PO in InvenTree | Behaviour |
+|---|---|
+| Doesn't exist | Create + add line items + issue + receive |
+| `PENDING` / `PLACED` | Reconcile line items to the file, then receive |
+| `COMPLETE`, in sync with file | No-op, exit 0 |
+| `COMPLETE`, diverges from file | Loud-fail with a drift report, exit 1 — resolve manually in the InvenTree UI |
+
+Default receive-into location is named `Lager`; override with `--location <name>`. The script falls back to the first top-level StockLocation if the requested one isn't found.
+
 ## Local development
 
 To validate workflow YAML before pushing:
