@@ -23,6 +23,7 @@ from inventree.api import InvenTreeAPI
 
 from inventree_sync.categories import load_category_map
 from inventree_sync.client import get_or_create_supplier
+from inventree_sync.dry_run import DryRunReporter
 from inventree_sync.fetchers import LCSCFetcher, MouserFetcher
 from inventree_sync.order_import import (
     SupplierOrder,
@@ -60,6 +61,24 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return args
 
 
+def _first_line(text: object) -> str:
+    """Collapse *text* to its first non-empty line.
+
+    ``DryRunReporter.print_report()`` emits each record on a single line; an
+    exception message that spans multiple lines (e.g. the Pfad-C drift report
+    from ``upsert_purchase_order`` which includes ADD/UPDATE/REMOVE rows on
+    separate lines, or a traceback-style message) would otherwise corrupt the
+    column layout. The full message is still logged via ``log.error("%s", exc)``
+    so no information is lost from the operator's perspective — only the
+    short summary the reporter records is single-line.
+    """
+    for line in str(text).splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
 def _suppress_category_warning() -> None:
     """Demote the 'KiCad symbol "" not in map' WARNING to DEBUG.
 
@@ -92,7 +111,7 @@ def _import_one_order(
     mouser_supplier,
     category_map: dict,
     receive_location,
-    dry_run: bool,
+    reporter: Optional[DryRunReporter] = None,
 ) -> int:
     """Process one parsed SupplierOrder. Returns exit-code (0 ok, 1 drift).
 
@@ -101,7 +120,18 @@ def _import_one_order(
     the side they need. The side matching ``order.supplier_name`` MUST be
     non-None — ``ensure_part_for_order_line`` enforces that at the call
     site of every line.
+
+    *reporter* is the **single source of truth** for dry-run mode.  When
+    non-None: resolution records decisions instead of executing writes,
+    and ``upsert_purchase_order`` is invoked with ``dry_run=True``.  When
+    None: real-run flow throughout.  This couples the two halves of the
+    pipeline so a caller cannot accidentally request a half-dry, half-wet
+    import.  Any failure path that returns non-zero ALSO records a FAIL
+    on the reporter, so the printed report's ``EXIT:`` line agrees with
+    the process exit code.
     """
+    dry_run = reporter is not None
+
     supplier_kind = order.supplier_name  # "LCSC" or "Mouser"
     supplier = lcsc_supplier if supplier_kind == "LCSC" else mouser_supplier
 
@@ -116,12 +146,28 @@ def _import_one_order(
                 lcsc_fetcher, mouser_fetcher,
                 lcsc_supplier, mouser_supplier,
                 category_map,
+                reporter=reporter,
             )
         except Exception as exc:
             log.error("Failed to resolve %s line %s: %s",
                       supplier_kind, line.sku, exc)
+            if reporter is not None:
+                reporter.record(
+                    "FAIL", "Parts", line.sku,
+                    f"resolution failed: {_first_line(exc)}",
+                )
             return 1
-        sku_to_sp[line.sku] = sp
+        # Real-run path: sp is a SupplierPart, add it to the mapping.
+        # Dry-run path: sp is None, skip. upsert_purchase_order's dry-run
+        # branches never *index* into sku_to_supplier_part[sku] (Pfad A/B
+        # return early before the addLineItem loop where indexing would
+        # happen). Pfad C only iterates the mapping via .items() to build
+        # the reverse sku→pk map for compute_po_line_diff — that iteration
+        # is safely empty too, which matches the "acceptable Pfad-C edge-
+        # case" documented in the spec (POs without `reference` would only
+        # diff cleanly when a non-empty reverse-map fallback exists).
+        if sp is not None:
+            sku_to_sp[line.sku] = sp
 
     try:
         report = upsert_purchase_order(
@@ -132,13 +178,30 @@ def _import_one_order(
         )
     except RuntimeError as exc:
         log.error("%s", exc)
+        if reporter is not None:
+            reporter.record(
+                "FAIL", "PurchaseOrder", order.reference,
+                f"upsert failed: {_first_line(exc)}",
+            )
         return 1
 
-    log.info(
-        "%s PO %s — added=%d updated=%d deleted=%d",
-        report.action, report.po_reference,
-        report.lines_added, report.lines_updated, report.lines_deleted,
-    )
+    if reporter is not None:
+        # In dry-run, fold the PO decision into the report under a stable
+        # category name. Action prefix "DRY_RUN_" is stripped so the
+        # printed report reads cleanly.
+        action_clean = report.action.removeprefix("DRY_RUN_")
+        action_kind = "CREATE" if action_clean in ("CREATE", "RECONCILE") else "REUSE"
+        reporter.record(
+            action_kind, "PurchaseOrder", report.po_reference,
+            f"{action_clean} added={report.lines_added} "
+            f"updated={report.lines_updated} deleted={report.lines_deleted}",
+        )
+    else:
+        log.info(
+            "%s PO %s — added=%d updated=%d deleted=%d",
+            report.action, report.po_reference,
+            report.lines_added, report.lines_updated, report.lines_deleted,
+        )
     return 0
 
 
@@ -148,6 +211,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     log.info(
         "Importing supplier-order parts without KiCad context — "
         "categories will fall back to supplier-provided or 'Miscellaneous'.")
+
+    reporter = DryRunReporter() if args.dry_run else None
 
     api = InvenTreeAPI()
     # Only instantiate the suppliers/fetchers actually needed — avoids
@@ -177,25 +242,39 @@ def main(argv: Optional[list[str]] = None) -> int:
             order = parse_lcsc_csv(Path(args.lcsc_csv))
         except Exception as exc:
             log.error("Failed to parse LCSC file %s: %s", args.lcsc_csv, exc)
+            if reporter is not None:
+                reporter.record(
+                    "FAIL", "Parse", args.lcsc_csv,
+                    f"LCSC parse failed: {_first_line(exc)}",
+                )
             rc |= 1
         else:
             rc |= _import_one_order(
                 api, order, lcsc_fetcher, mouser_fetcher,
                 lcsc_supplier, mouser_supplier, category_map,
-                receive_location, args.dry_run,
+                receive_location,
+                reporter=reporter,
             )
     if args.mouser_xls:
         try:
             order = parse_mouser_xls(Path(args.mouser_xls))
         except Exception as exc:
             log.error("Failed to parse Mouser file %s: %s", args.mouser_xls, exc)
+            if reporter is not None:
+                reporter.record(
+                    "FAIL", "Parse", args.mouser_xls,
+                    f"Mouser parse failed: {_first_line(exc)}",
+                )
             rc |= 1
         else:
             rc |= _import_one_order(
                 api, order, lcsc_fetcher, mouser_fetcher,
                 lcsc_supplier, mouser_supplier, category_map,
-                receive_location, args.dry_run,
+                receive_location,
+                reporter=reporter,
             )
+    if reporter is not None:
+        reporter.print_report(title="Supplier Order Import (dry run)")
     return rc
 
 
