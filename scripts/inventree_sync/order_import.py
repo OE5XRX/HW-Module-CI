@@ -607,11 +607,19 @@ _STATUS_PLACED = 20
 _STATUS_COMPLETE = 30
 _STOCK_STATUS_OK = 10  # InvenTree StockItem status code "OK"
 _PRICE_EPSILON = 1e-6  # tolerance for float price comparison
+_DRY_RUN_SERVER_ASSIGNED = "(server-assigned)"  # placeholder when the real ref would mutate
 
 
 @dataclass
 class UpsertReport:
-    """Result of upsert_purchase_order — used by the CLI for summary print."""
+    """Result of upsert_purchase_order — used by the CLI for summary print.
+
+    *po_reference* holds the InvenTree PurchaseOrder.reference — i.e. the
+    server-assigned sequence value (e.g. ``"PO-0006"``), not the supplier-
+    side order ID (which lives in ``PurchaseOrder.supplier_reference``).
+    For dry-run Pfad A this is ``_DRY_RUN_SERVER_ASSIGNED`` because we skip
+    the OPTIONS probe in dry-run mode (the value mutates between runs).
+    """
     action: str               # CREATED | RECONCILED | IN_SYNC | DRY_RUN_*
     po_reference: str
     lines_added: int = 0
@@ -619,22 +627,61 @@ class UpsertReport:
     lines_deleted: int = 0
 
 
-def _find_po(api: InvenTreeAPI, supplier_pk: int, reference: str):
-    matches = PurchaseOrder.list(api, supplier=supplier_pk, reference=reference)
+def _next_po_reference(api: InvenTreeAPI) -> str:
+    """Read the next valid PurchaseOrder.reference from the server.
+
+    InvenTree's OPTIONS response for /api/order/po/ includes a computed
+    ``actions.POST.reference.default`` that is the next reference matching
+    the server's configured pattern (e.g. ``"PO-0006"`` for the default
+    ``PO-{ref:04d}`` pattern). This is the same mechanism the React UI
+    uses to pre-fill the Create-PO form.
+
+    Raises RuntimeError if the OPTIONS response is missing the field or
+    the request fails — the importer can't reliably create POs without
+    knowing the next valid reference, so we fail loud rather than guess.
+    """
+    try:
+        resp = api.request(PurchaseOrder.URL, method="OPTIONS")
+        body = resp.json()
+        ref = body["actions"]["POST"]["reference"]["default"]
+        if not isinstance(ref, str) or not ref:
+            raise KeyError("actions.POST.reference.default present but not a non-empty string")
+        return ref
+    # Broad except is intentional: HTTPError/ConnectionError/KeyError/TypeError/
+    # JSONDecodeError all map to the same caller-visible contract — fail loud.
+    except Exception as exc:
+        host = getattr(api, "api_url", getattr(api, "base_url", "<unknown>"))
+        raise RuntimeError(
+            f"Failed to read next PurchaseOrder.reference from "
+            f"OPTIONS {host}{PurchaseOrder.URL} "
+            f"(expected actions.POST.reference.default): {exc}"
+        ) from exc
+
+
+def _find_po(api: InvenTreeAPI, supplier_pk: int, supplier_reference: str):
+    """Locate a PurchaseOrder by supplier + supplier_reference.
+
+    The server-side ``?supplier_reference=`` filter is silently ignored
+    (verified empirically against InvenTree 1.3.4 — all POs for the
+    supplier come back regardless of the filter value), so we list all
+    POs for the supplier and post-filter on supplier_reference. Same
+    defensive pattern as ``find_part_by_name`` in ``client.py``.
+
+    The supplier= filter is also post-filtered: some InvenTree versions
+    serialize FKs as strings, so we coerce to int before comparing and
+    skip the check when the value isn't numeric.
+
+    Returns the first match (or None). Logs a warning when more than one
+    PO matches — that indicates a data-quality issue the operator should
+    resolve in the InvenTree UI (duplicate supplier_reference values).
+    """
+    matches = PurchaseOrder.list(api, supplier=supplier_pk)
+    filtered = []
     for po in matches:
-        # Post-filter — server may ignore the reference= and/or supplier=
-        # filters (same defensive pattern as find_part_by_name in client.py).
-        # Only reject when the PO's value is a concrete primitive that differs
-        # from the target; tolerate non-primitive types (test mocks) so the
-        # server-side filter is treated as authoritative.
-        po_ref = getattr(po, "reference", None)
-        if isinstance(po_ref, str) and po_ref != reference:
-            continue
+        # Supplier post-filter: server-side ?supplier= filter is unreliable on
+        # some InvenTree versions; verify locally. Same pattern as below for
+        # supplier_reference and as find_part_by_name in client.py.
         po_supplier = getattr(po, "supplier", None)
-        # The InvenTree client may serialize foreign keys as int or str —
-        # coerce both sides to int before comparing. Skip the check entirely
-        # if the value isn't numeric (test mocks); server-side filter is then
-        # treated as authoritative.
         if po_supplier is not None and not isinstance(po_supplier, bool):
             try:
                 po_supplier_pk = int(po_supplier)
@@ -642,8 +689,21 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, reference: str):
                 po_supplier_pk = None
             if po_supplier_pk is not None and po_supplier_pk != supplier_pk:
                 continue
-        return po
-    return None
+        # supplier_reference post-filter — server-side ?supplier_reference=
+        # filter is empirically ignored (InvenTree 1.3.4, verified by direct
+        # curl). The supplier_reference field carries the Mouser/LCSC order ID.
+        po_supplier_ref = getattr(po, "supplier_reference", None)
+        if isinstance(po_supplier_ref, str) and po_supplier_ref == supplier_reference:
+            filtered.append(po)
+    if len(filtered) > 1:
+        logger.warning(
+            "PO lookup for supplier=%d supplier_reference=%r returned "
+            "%d matches; using first (pk=%s). Resolve the duplicate in "
+            "the InvenTree UI.",
+            supplier_pk, supplier_reference, len(filtered),
+            getattr(filtered[0], "pk", "?"),
+        )
+    return filtered[0] if filtered else None
 
 
 def upsert_purchase_order(
@@ -684,18 +744,28 @@ def upsert_purchase_order(
             len(deduped_lines),
         )
 
-    existing = _find_po(api, supplier.pk, order.reference)
+    existing = _find_po(api, supplier.pk, supplier_reference=order.reference)
 
     if existing is None:
         # Pfad A
         if dry_run:
+            # Dry-run: skip the OPTIONS probe. The next reference value
+            # would be reported but mutates between runs (each real POST
+            # advances the sequence). "(server-assigned)" is honest about
+            # what the operator will see in the InvenTree UI.
             return UpsertReport(
-                action="DRY_RUN_CREATE", po_reference=order.reference,
+                action="DRY_RUN_CREATE", po_reference=_DRY_RUN_SERVER_ASSIGNED,
                 lines_added=len(deduped_lines),
             )
+        next_ref = _next_po_reference(api)
         po = PurchaseOrder.create(api, {
             "supplier": supplier.pk,
-            "reference": order.reference,
+            "reference": next_ref,
+            # supplier_reference: structured queryable field used by _find_po
+            #   for idempotency on re-runs.
+            # description: human-readable provenance trail visible in the
+            #   InvenTree UI alongside the supplier name.
+            "supplier_reference": order.reference,
             "description": f"Imported from {order.supplier_name} order {order.reference}",
             **({"target_date": order.order_date} if order.order_date else {}),
         })
@@ -711,23 +781,41 @@ def upsert_purchase_order(
         po.issue()
         po.receiveAll(location=receive_location.pk, status=_STOCK_STATUS_OK)
         return UpsertReport(
-            action="CREATED", po_reference=order.reference,
+            action="CREATED", po_reference=next_ref,
             lines_added=len(deduped_lines),
         )
 
     status = int(getattr(existing, "status", 0))
+    # Defensive: real InvenTree POs always have a non-blank server-assigned
+    # reference (the field is required at the API layer). The fallback to
+    # `<unknown>` exists for the edge case where a partial mock or a
+    # corrupted API response yields an empty/None reference; using a clear
+    # placeholder instead of silently substituting the supplier-side
+    # `order.reference` preserves the `UpsertReport.po_reference` contract
+    # (= InvenTree-side reference, never supplier-side).
+    existing_ref = (
+        str(getattr(existing, "reference", "") or "") or "<unknown>"
+    )
     existing_lines = list(existing.getLineItems())
     diff = compute_po_line_diff(deduped_lines, existing_lines, sku_to_sp_pk)
 
     if status >= _STATUS_COMPLETE:
         # Pfad C
         if diff.is_empty:
-            logger.info("PO %s already COMPLETE and matches file — no-op.",
-                        order.reference)
-            return UpsertReport(action="IN_SYNC", po_reference=order.reference)
+            # Use existing_ref (server-side, e.g. PO-0001) so operators
+            # cross-checking the log against the InvenTree UI find the
+            # right PO. supplier_reference is the cross-link to the
+            # source file (Mouser/LCSC order ID).
+            logger.info(
+                "PO %s (supplier_reference=%s) already COMPLETE and "
+                "matches file — no-op.",
+                existing_ref, order.reference,
+            )
+            return UpsertReport(action="IN_SYNC", po_reference=existing_ref)
         raise RuntimeError(
-            f"PO {order.reference} ({order.supplier_name}) is COMPLETE but "
-            f"differs from the source file:\n"
+            f"PO {existing_ref} (supplier_reference={order.reference}, "
+            f"{order.supplier_name}) is COMPLETE but differs from the "
+            f"source file:\n"
             f"{diff.format_report()}\n"
             f"Resolve manually in the InvenTree UI (or delete the PO + "
             f"associated StockItems) and re-run."
@@ -746,15 +834,16 @@ def upsert_purchase_order(
             for li in partial
         )
         raise RuntimeError(
-            f"PO {order.reference} ({order.supplier_name}) has line item(s) "
-            f"with received stock that the source file no longer lists: "
-            f"{details}. Resolve manually in the InvenTree UI (delete the "
-            f"StockItems and the line, or restore the line in the source file)."
+            f"PO {existing_ref} (supplier_reference={order.reference}, "
+            f"{order.supplier_name}) has line item(s) with received stock "
+            f"that the source file no longer lists: {details}. Resolve "
+            f"manually in the InvenTree UI (delete the StockItems and "
+            f"the line, or restore the line in the source file)."
         )
 
     if dry_run:
         return UpsertReport(
-            action="DRY_RUN_RECONCILE", po_reference=order.reference,
+            action="DRY_RUN_RECONCILE", po_reference=existing_ref,
             lines_added=len(diff.to_add),
             lines_updated=len(diff.to_update),
             lines_deleted=len(diff.to_delete),
@@ -782,7 +871,7 @@ def upsert_purchase_order(
     existing.receiveAll(location=receive_location.pk, status=_STOCK_STATUS_OK)
 
     return UpsertReport(
-        action="RECONCILED", po_reference=order.reference,
+        action="RECONCILED", po_reference=existing_ref,
         lines_added=len(diff.to_add),
         lines_updated=len(diff.to_update),
         lines_deleted=len(diff.to_delete),
