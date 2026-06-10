@@ -14,11 +14,17 @@ File is source-of-truth on re-runs:
 from __future__ import annotations
 
 import csv
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from inventree.api import InvenTreeAPI
+from inventree.stock import StockLocation
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -218,3 +224,49 @@ def _read_mouser_rows(path: Path) -> list[dict]:
 def parse_mouser_xls(path: Path) -> SupplierOrder:
     """Parse a Mouser-XLS order file into a SupplierOrder."""
     return _rows_to_mouser_order(_read_mouser_rows(path))
+
+
+def get_receive_location(api: InvenTreeAPI, name: str) -> StockLocation:
+    """Resolve the receive-into StockLocation.
+
+    Order of attempts:
+      1. Exact name match (case-sensitive — InvenTree's filter is exact).
+      2. First top-level StockLocation (parent is None).
+      3. Raise RuntimeError if no StockLocation exists at all.
+
+    The fallback exists so a fresh InvenTree install with just a single
+    default location can be imported into without forcing the user to
+    rename it to "Lager" first.
+
+    Unlike ``get_or_create_supplier`` in ``client.py``, this function
+    *raises* on failure rather than returning ``None`` — a receive-into
+    location is a hard prerequisite for the importer.
+    """
+    try:
+        matches = StockLocation.list(api, name=name)
+        for loc in matches:
+            if loc.name == name:
+                return loc
+    except Exception as exc:
+        logger.warning("StockLocation lookup for %r failed: %s", name, exc)
+
+    try:
+        all_locs = StockLocation.list(api)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cannot list StockLocations: {exc}. "
+            "Verify INVENTREE_API_HOST/TOKEN and that the server is up."
+        ) from exc
+
+    top_level = [loc for loc in all_locs if getattr(loc, "parent", None) in (None, 0)]
+    if top_level:
+        chosen = top_level[0]
+        logger.warning(
+            "StockLocation %r not found; falling back to top-level %r (pk=%s)",
+            name, chosen.name, chosen.pk)
+        return chosen
+
+    raise RuntimeError(
+        "No StockLocation found in InvenTree. Create one (e.g. 'Lager') "
+        "in the UI before running this importer."
+    )
