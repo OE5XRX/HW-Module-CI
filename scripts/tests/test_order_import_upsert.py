@@ -442,7 +442,7 @@ def test_next_po_reference_raises_when_options_request_fails():
 
 
 def test_find_po_post_filters_by_supplier_reference():
-    """Server-side supplier_reference= filter is ignored; we post-filter."""
+    """Server-side supplier_reference= AND supplier= filters are both ignored; we post-filter both."""
     from inventree_sync.order_import import _find_po
 
     # Three POs returned (server ignored the filter)

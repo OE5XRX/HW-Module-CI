@@ -658,8 +658,7 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, supplier_reference: str):
 
     The supplier= filter is also post-filtered: some InvenTree versions
     serialize FKs as strings, so we coerce to int before comparing and
-    skip the check when the value isn't numeric (test mocks treat the
-    server-side filter as authoritative in that case).
+    skip the check when the value isn't numeric.
 
     Returns the first match (or None). Multiple matches are not
     expected — supplier_reference is the operational identifier — and
@@ -669,7 +668,9 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, supplier_reference: str):
     """
     matches = PurchaseOrder.list(api, supplier=supplier_pk)
     for po in matches:
-        # Supplier post-filter (defensive, same as before).
+        # Supplier post-filter: server-side ?supplier= filter is unreliable on
+        # some InvenTree versions; verify locally. Same pattern as below for
+        # supplier_reference and as find_part_by_name in client.py.
         po_supplier = getattr(po, "supplier", None)
         if po_supplier is not None and not isinstance(po_supplier, bool):
             try:
@@ -678,9 +679,11 @@ def _find_po(api: InvenTreeAPI, supplier_pk: int, supplier_reference: str):
                 po_supplier_pk = None
             if po_supplier_pk is not None and po_supplier_pk != supplier_pk:
                 continue
-        # supplier_reference post-filter (the actual identifier).
-        po_supplier_ref = str(getattr(po, "supplier_reference", "") or "")
-        if po_supplier_ref == supplier_reference:
+        # supplier_reference post-filter — server-side ?supplier_reference=
+        # filter is empirically ignored (InvenTree 1.3.4, verified by direct
+        # curl). The supplier_reference field carries the Mouser/LCSC order ID.
+        po_supplier_ref = getattr(po, "supplier_reference", None)
+        if isinstance(po_supplier_ref, str) and po_supplier_ref == supplier_reference:
             return po
     return None
 
