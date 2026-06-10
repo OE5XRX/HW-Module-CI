@@ -546,13 +546,16 @@ class UpsertReport:
 def _find_po(api: InvenTreeAPI, supplier_pk: int, reference: str):
     matches = PurchaseOrder.list(api, supplier=supplier_pk, reference=reference)
     for po in matches:
-        # Post-filter — server may ignore the reference= filter (same defensive
-        # pattern as find_part_by_name in client.py).  Only reject when the
-        # PO's reference is a concrete string that differs from the target;
-        # tolerate non-string types (test mocks) so the server-side filter is
-        # treated as authoritative.
+        # Post-filter — server may ignore the reference= and/or supplier=
+        # filters (same defensive pattern as find_part_by_name in client.py).
+        # Only reject when the PO's value is a concrete primitive that differs
+        # from the target; tolerate non-primitive types (test mocks) so the
+        # server-side filter is treated as authoritative.
         po_ref = getattr(po, "reference", None)
         if isinstance(po_ref, str) and po_ref != reference:
+            continue
+        po_supplier = getattr(po, "supplier", None)
+        if isinstance(po_supplier, int) and po_supplier != supplier_pk:
             continue
         return po
     return None
@@ -654,6 +657,23 @@ def upsert_purchase_order(
             "quantity": upd.new_quantity,
             "purchase_price": upd.new_price,
         })
+    # Guard against deleting partially-received lines — would orphan StockItems
+    # or fail at the API layer. Fail loud so the operator resolves manually
+    # (matches the Pfad-C policy for COMPLETE-PO drift).
+    partial = [li for li in diff.to_delete
+               if int(getattr(li, "received", 0) or 0) > 0]
+    if partial:
+        details = ", ".join(
+            f"{getattr(li, 'reference', '') or f'line#{li.pk}'} "
+            f"(received={int(getattr(li, 'received', 0) or 0)})"
+            for li in partial
+        )
+        raise RuntimeError(
+            f"PO {order.reference} ({order.supplier_name}) has line item(s) "
+            f"with received stock that the source file no longer lists: "
+            f"{details}. Resolve manually in the InvenTree UI (delete the "
+            f"StockItems and the line, or restore the line in the source file)."
+        )
     for li in diff.to_delete:
         li.delete()
 

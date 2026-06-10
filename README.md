@@ -153,14 +153,17 @@ export MOUSER_API_KEY=...
 # Dry-run: print what would happen, no writes
 python3 scripts/import_supplier_order.py \
     --mouser-xls ~/orders/275708282.xls \
-    --lcsc-csv ~/orders/LCSC__WM2504270070_*.csv \
+    --lcsc-csv ~/orders/LCSC__WM2504270070_20260610043835.csv \
     --dry-run
 
 # Real run
 python3 scripts/import_supplier_order.py \
     --mouser-xls ~/orders/275708282.xls \
-    --lcsc-csv ~/orders/LCSC__WM2504270070_*.csv
+    --lcsc-csv ~/orders/LCSC__WM2504270070_20260610043835.csv
 ```
+
+(`--lcsc-csv` takes a single file path. LCSC exports include a timestamp
+suffix; pass the exact filename rather than a shell glob.)
 
 The file (XLS/CSV) is **source of truth** on re-runs:
 

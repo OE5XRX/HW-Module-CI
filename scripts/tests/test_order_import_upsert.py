@@ -152,10 +152,10 @@ def test_path_b_deletes_extra_line():
     sp_a = _supplier_part(pk=101, sku="A")
     li_a = MagicMock()
     li_a.pk = 1; li_a.reference = "A"; li_a.quantity = 10
-    li_a.purchase_price = 1.0; li_a.part = 101
+    li_a.purchase_price = 1.0; li_a.part = 101; li_a.received = 0
     li_c = MagicMock()
     li_c.pk = 2; li_c.reference = "C"; li_c.quantity = 3
-    li_c.purchase_price = 0.5; li_c.part = 103
+    li_c.purchase_price = 0.5; li_c.part = 103; li_c.received = 0
 
     existing_po = _po(status=20, lines=[li_a, li_c])
 
@@ -171,6 +171,40 @@ def test_path_b_deletes_extra_line():
 
     li_c.delete.assert_called_once()
     li_a.delete.assert_not_called()
+
+
+def test_path_b_refuses_to_delete_partially_received_line():
+    """PO has line C with received stock; file no longer lists C → fail loud."""
+    order = SupplierOrder(
+        supplier_name="Mouser", reference="X", order_date=None,
+        currency="EUR", lines=[_line("A", 10, 1.0)],
+    )
+    sp_a = _supplier_part(pk=101, sku="A")
+    li_a = MagicMock()
+    li_a.pk = 1; li_a.reference = "A"; li_a.quantity = 10
+    li_a.purchase_price = 1.0; li_a.part = 101; li_a.received = 0
+    li_c = MagicMock()
+    li_c.pk = 2; li_c.reference = "C"; li_c.quantity = 3
+    li_c.purchase_price = 0.5; li_c.part = 103; li_c.received = 2  # partial
+
+    existing_po = _po(status=20, lines=[li_a, li_c])
+
+    with patch("inventree_sync.order_import.PurchaseOrder") as PO:
+        PO.list.return_value = [existing_po]
+        with pytest.raises(RuntimeError) as exc:
+            upsert_purchase_order(
+                api=MagicMock(),
+                order=order,
+                supplier=MagicMock(pk=1, name="Mouser"),
+                sku_to_supplier_part={"A": sp_a},
+                receive_location=MagicMock(pk=7),
+            )
+
+    msg = str(exc.value)
+    assert "C" in msg
+    assert "received=2" in msg
+    li_c.delete.assert_not_called()
+    existing_po.receiveAll.assert_not_called()
 
 
 def test_path_b_no_op_when_in_sync():

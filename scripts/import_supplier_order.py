@@ -133,10 +133,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         "categories will fall back to supplier-provided or 'Miscellaneous'.")
 
     api = InvenTreeAPI()
-    lcsc_fetcher = LCSCFetcher()
+    # Only instantiate the suppliers/fetchers actually needed — avoids
+    # confusing error logs and avoidable permission failures on the unused
+    # side. Downstream helpers (`ensure_part_for_order_line`) accept Optional
+    # suppliers/fetchers and only touch the relevant one for each line.
+    lcsc_fetcher = LCSCFetcher() if args.lcsc_csv else None
     mouser_fetcher = MouserFetcher() if args.mouser_xls else None
-    lcsc_supplier = get_or_create_supplier(api, name="LCSC")
-    mouser_supplier = get_or_create_supplier(api, name="Mouser")
+    lcsc_supplier = (
+        get_or_create_supplier(api, name="LCSC") if args.lcsc_csv else None
+    )
+    mouser_supplier = (
+        get_or_create_supplier(api, name="Mouser") if args.mouser_xls else None
+    )
     if args.lcsc_csv and lcsc_supplier is None:
         log.error("Could not get or create LCSC supplier — aborting.")
         return 1
