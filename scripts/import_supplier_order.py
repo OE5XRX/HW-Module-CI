@@ -93,7 +93,6 @@ def _import_one_order(
     mouser_supplier,
     category_map: dict,
     receive_location,
-    dry_run: bool,
     reporter: Optional[DryRunReporter] = None,
 ) -> int:
     """Process one parsed SupplierOrder. Returns exit-code (0 ok, 1 drift).
@@ -104,12 +103,17 @@ def _import_one_order(
     non-None — ``ensure_part_for_order_line`` enforces that at the call
     site of every line.
 
-    *reporter* is set when ``--dry-run`` is active. It's threaded into
-    ``ensure_part_for_order_line`` so the resolution chain records
-    decisions instead of executing writes. PO upsert decisions are
-    recorded here using the ``UpsertReport.action`` from
-    ``upsert_purchase_order`` (which is dry-run-aware on its own).
+    *reporter* is the **single source of truth** for dry-run mode.  When
+    non-None: resolution records decisions instead of executing writes,
+    and ``upsert_purchase_order`` is invoked with ``dry_run=True``.  When
+    None: real-run flow throughout.  This couples the two halves of the
+    pipeline so a caller cannot accidentally request a half-dry, half-wet
+    import.  Any failure path that returns non-zero ALSO records a FAIL
+    on the reporter, so the printed report's ``EXIT:`` line agrees with
+    the process exit code.
     """
+    dry_run = reporter is not None
+
     supplier_kind = order.supplier_name  # "LCSC" or "Mouser"
     supplier = lcsc_supplier if supplier_kind == "LCSC" else mouser_supplier
 
@@ -129,6 +133,11 @@ def _import_one_order(
         except Exception as exc:
             log.error("Failed to resolve %s line %s: %s",
                       supplier_kind, line.sku, exc)
+            if reporter is not None:
+                reporter.record(
+                    "FAIL", "Parts", line.sku,
+                    f"resolution failed: {exc}",
+                )
             return 1
         # Real-run path: sp is a SupplierPart, add it to the mapping.
         # Dry-run path: sp is None, skip — upsert_purchase_order short-
@@ -145,6 +154,11 @@ def _import_one_order(
         )
     except RuntimeError as exc:
         log.error("%s", exc)
+        if reporter is not None:
+            reporter.record(
+                "FAIL", "PurchaseOrder", order.reference,
+                f"upsert failed: {exc}",
+            )
         return 1
 
     if reporter is not None:
@@ -204,12 +218,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             order = parse_lcsc_csv(Path(args.lcsc_csv))
         except Exception as exc:
             log.error("Failed to parse LCSC file %s: %s", args.lcsc_csv, exc)
+            if reporter is not None:
+                reporter.record(
+                    "FAIL", "Parse", args.lcsc_csv,
+                    f"LCSC parse failed: {exc}",
+                )
             rc |= 1
         else:
             rc |= _import_one_order(
                 api, order, lcsc_fetcher, mouser_fetcher,
                 lcsc_supplier, mouser_supplier, category_map,
-                receive_location, args.dry_run,
+                receive_location,
                 reporter=reporter,
             )
     if args.mouser_xls:
@@ -217,12 +236,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             order = parse_mouser_xls(Path(args.mouser_xls))
         except Exception as exc:
             log.error("Failed to parse Mouser file %s: %s", args.mouser_xls, exc)
+            if reporter is not None:
+                reporter.record(
+                    "FAIL", "Parse", args.mouser_xls,
+                    f"Mouser parse failed: {exc}",
+                )
             rc |= 1
         else:
             rc |= _import_one_order(
                 api, order, lcsc_fetcher, mouser_fetcher,
                 lcsc_supplier, mouser_supplier, category_map,
-                receive_location, args.dry_run,
+                receive_location,
                 reporter=reporter,
             )
     if reporter is not None:

@@ -221,3 +221,197 @@ def test_real_run_does_not_instantiate_reporter(tmp_path, monkeypatch):
     reporter_cls.assert_not_called()
     # ensure_part_for_order_line called WITHOUT reporter kwarg (or with None)
     assert epfol.call_args.kwargs.get("reporter") is None
+
+
+def test_dry_run_derives_upsert_dry_run_from_reporter(tmp_path, monkeypatch):
+    """upsert_purchase_order receives dry_run=True iff a reporter exists.
+
+    Single source of truth: ``_import_one_order`` derives ``dry_run`` from
+    ``reporter is not None``; no separate ``dry_run`` parameter exists to
+    drift from the reporter state.
+    """
+    csv_file = tmp_path / "LCSC__WM_1.csv"
+    csv_file.write_text(
+        "LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,"
+        "Package,Description,RoHS,Quantity,Unit Price($),Ext.Price($),"
+        "Estimated lead time (business days),Updated lead time,"
+        "Date Code / Lot No.\n"
+        "C1,MPN1,M1,,0805,desc,YES,5,0.1,0.5,,,\n"
+    )
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    with patch("import_supplier_order.InvenTreeAPI"), \
+         patch("import_supplier_order.LCSCFetcher"), \
+         patch("import_supplier_order.MouserFetcher"), \
+         patch("import_supplier_order.get_or_create_supplier") as gos, \
+         patch("import_supplier_order.get_receive_location") as grl, \
+         patch("import_supplier_order.ensure_part_for_order_line") as epfol, \
+         patch("import_supplier_order.upsert_purchase_order") as upsert, \
+         patch("import_supplier_order.load_category_map", return_value={}):
+        gos.return_value = MagicMock(pk=1)
+        grl.return_value = MagicMock(pk=7)
+        epfol.return_value = (None, None)
+        upsert.return_value = MagicMock(
+            action="DRY_RUN_CREATE", po_reference="WM",
+            lines_added=1, lines_updated=0, lines_deleted=0,
+        )
+        rc = cli.main(["--lcsc-csv", str(csv_file), "--dry-run"])
+
+    assert rc == 0
+    assert upsert.call_args.kwargs["dry_run"] is True
+
+
+def test_real_run_invokes_upsert_with_dry_run_false(tmp_path, monkeypatch):
+    """Without --dry-run, upsert_purchase_order receives dry_run=False."""
+    csv_file = tmp_path / "LCSC__WM_1.csv"
+    csv_file.write_text(
+        "LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,"
+        "Package,Description,RoHS,Quantity,Unit Price($),Ext.Price($),"
+        "Estimated lead time (business days),Updated lead time,"
+        "Date Code / Lot No.\n"
+        "C1,MPN1,M1,,0805,desc,YES,5,0.1,0.5,,,\n"
+    )
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    with patch("import_supplier_order.InvenTreeAPI"), \
+         patch("import_supplier_order.LCSCFetcher"), \
+         patch("import_supplier_order.MouserFetcher"), \
+         patch("import_supplier_order.get_or_create_supplier") as gos, \
+         patch("import_supplier_order.get_receive_location") as grl, \
+         patch("import_supplier_order.ensure_part_for_order_line") as epfol, \
+         patch("import_supplier_order.upsert_purchase_order") as upsert, \
+         patch("import_supplier_order.load_category_map", return_value={}):
+        gos.return_value = MagicMock(pk=1)
+        grl.return_value = MagicMock(pk=7)
+        epfol.return_value = (MagicMock(pk=100), MagicMock(pk=200, SKU="C1"))
+        upsert.return_value = MagicMock(
+            action="CREATED", po_reference="WM",
+            lines_added=1, lines_updated=0, lines_deleted=0,
+        )
+        rc = cli.main(["--lcsc-csv", str(csv_file)])
+
+    assert rc == 0
+    assert upsert.call_args.kwargs["dry_run"] is False
+
+
+def test_dry_run_resolution_exception_records_fail(tmp_path, monkeypatch):
+    """A resolution-side exception in dry-run records FAIL so the printed
+    EXIT line matches the process exit code."""
+    csv_file = tmp_path / "LCSC__WM_1.csv"
+    csv_file.write_text(
+        "LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,"
+        "Package,Description,RoHS,Quantity,Unit Price($),Ext.Price($),"
+        "Estimated lead time (business days),Updated lead time,"
+        "Date Code / Lot No.\n"
+        "C1,MPN1,M1,,0805,desc,YES,5,0.1,0.5,,,\n"
+    )
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    with patch("import_supplier_order.InvenTreeAPI"), \
+         patch("import_supplier_order.LCSCFetcher"), \
+         patch("import_supplier_order.MouserFetcher"), \
+         patch("import_supplier_order.get_or_create_supplier") as gos, \
+         patch("import_supplier_order.get_receive_location") as grl, \
+         patch("import_supplier_order.ensure_part_for_order_line") as epfol, \
+         patch("import_supplier_order.upsert_purchase_order") as upsert, \
+         patch("import_supplier_order.load_category_map", return_value={}), \
+         patch("import_supplier_order.DryRunReporter") as reporter_cls:
+        reporter_instance = MagicMock()
+        reporter_instance.records = []
+        reporter_cls.return_value = reporter_instance
+        gos.return_value = MagicMock(pk=1)
+        grl.return_value = MagicMock(pk=7)
+        epfol.side_effect = RuntimeError("boom")
+        rc = cli.main(["--lcsc-csv", str(csv_file), "--dry-run"])
+
+    assert rc == 1
+    upsert.assert_not_called()
+    reporter_instance.record.assert_called_once_with(
+        "FAIL", "Parts", "C1",
+        "resolution failed: boom",
+    )
+    reporter_instance.print_report.assert_called_once()
+
+
+def test_dry_run_upsert_runtime_error_records_fail(tmp_path, monkeypatch):
+    """RuntimeError from upsert_purchase_order in dry-run mode records FAIL."""
+    csv_file = tmp_path / "LCSC__WM_1.csv"
+    csv_file.write_text(
+        "LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,"
+        "Package,Description,RoHS,Quantity,Unit Price($),Ext.Price($),"
+        "Estimated lead time (business days),Updated lead time,"
+        "Date Code / Lot No.\n"
+        "C1,MPN1,M1,,0805,desc,YES,5,0.1,0.5,,,\n"
+    )
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    with patch("import_supplier_order.InvenTreeAPI"), \
+         patch("import_supplier_order.LCSCFetcher"), \
+         patch("import_supplier_order.MouserFetcher"), \
+         patch("import_supplier_order.get_or_create_supplier") as gos, \
+         patch("import_supplier_order.get_receive_location") as grl, \
+         patch("import_supplier_order.ensure_part_for_order_line") as epfol, \
+         patch("import_supplier_order.upsert_purchase_order") as upsert, \
+         patch("import_supplier_order.load_category_map", return_value={}), \
+         patch("import_supplier_order.DryRunReporter") as reporter_cls:
+        reporter_instance = MagicMock()
+        reporter_instance.records = []
+        reporter_cls.return_value = reporter_instance
+        gos.return_value = MagicMock(pk=1)
+        grl.return_value = MagicMock(pk=7)
+        epfol.return_value = (None, None)
+        upsert.side_effect = RuntimeError("drift!")
+        rc = cli.main(["--lcsc-csv", str(csv_file), "--dry-run"])
+
+    assert rc == 1
+    reporter_instance.record.assert_called_once_with(
+        "FAIL", "PurchaseOrder", "WM",
+        "upsert failed: drift!",
+    )
+    reporter_instance.print_report.assert_called_once()
+
+
+def test_dry_run_parse_exception_records_fail(tmp_path, monkeypatch):
+    """A parse failure for the LCSC/Mouser file in dry-run records FAIL."""
+    csv_file = tmp_path / "LCSC__WM_1.csv"
+    csv_file.write_text(
+        "LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,"
+        "Package,Description,RoHS,Quantity,Unit Price($),Ext.Price($),"
+        "Estimated lead time (business days),Updated lead time,"
+        "Date Code / Lot No.\n"
+        "C1,MPN1,M1,,0805,desc,YES,bad-qty,0.1,0.5,,,\n"
+    )
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    with patch("import_supplier_order.InvenTreeAPI"), \
+         patch("import_supplier_order.LCSCFetcher"), \
+         patch("import_supplier_order.MouserFetcher"), \
+         patch("import_supplier_order.get_or_create_supplier") as gos, \
+         patch("import_supplier_order.get_receive_location") as grl, \
+         patch("import_supplier_order.ensure_part_for_order_line") as epfol, \
+         patch("import_supplier_order.upsert_purchase_order") as upsert, \
+         patch("import_supplier_order.load_category_map", return_value={}), \
+         patch("import_supplier_order.DryRunReporter") as reporter_cls:
+        reporter_instance = MagicMock()
+        reporter_instance.records = []
+        reporter_cls.return_value = reporter_instance
+        gos.return_value = MagicMock(pk=1)
+        grl.return_value = MagicMock(pk=7)
+        rc = cli.main(["--lcsc-csv", str(csv_file), "--dry-run"])
+
+    assert rc == 1
+    epfol.assert_not_called()
+    upsert.assert_not_called()
+    # FAIL record uses "Parse" category and the file path as target
+    assert reporter_instance.record.call_count == 1
+    args = reporter_instance.record.call_args
+    assert args[0][0] == "FAIL"
+    assert args[0][1] == "Parse"
+    assert str(csv_file) in args[0][2]
+    assert "LCSC parse failed" in args[0][3]
+    reporter_instance.print_report.assert_called_once()
