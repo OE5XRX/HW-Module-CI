@@ -19,13 +19,13 @@ import sys
 from typing import Optional
 
 from inventree.api import InvenTreeAPI
-from inventree.company import SupplierPart
+from inventree.company import Company, SupplierPart
 from inventree.part import BomItem, Part, PartCategory
 
 from inventree_sync import BomEntry, ensure_parts_exist
 from inventree_sync.attachments import attach_kibot_outputs
 from inventree_sync.categories import load_category_map
-from inventree_sync.client import ensure_related_parts, find_part_by_name_and_revision
+from inventree_sync.client import ensure_related_parts, find_part_by_name_and_revision, get_or_create_supplier
 from inventree_sync.cost_report import generate_cost_report
 from inventree_sync.dry_run import DryRunReporter
 
@@ -36,6 +36,10 @@ log = logging.getLogger(__name__)
 PCB_CATEGORY_NAME      = "Printed-Circuit Boards"
 ASSEMBLY_CATEGORY_NAME = "PCBA"
 STENCIL_CATEGORY_NAME  = "SMT Stencil"
+
+# Default fab supplier name. CLI --pcb-supplier overrides per-run; the
+# Company is auto-created via get_or_create_supplier if missing.
+DEFAULT_PCB_SUPPLIER_NAME = "JLCPCB"
 
 
 # ---------------------------------------------------------------------------
@@ -243,12 +247,76 @@ def match_supplier_parts(
 # PCB + assembly + stencil creation
 # ---------------------------------------------------------------------------
 
-def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, version: str, image: str | None) -> Part:
+def _ensure_fab_supplier_part(
+    api: InvenTreeAPI,
+    part: Part,
+    supplier: Company,
+    sku: str,
+) -> None:
+    """Idempotently link a Part to a fab Supplier with a derived SKU.
+
+    Same defensive pattern as ``ensure_supplier_parts`` in
+    ``inventree_sync/client.py``: list existing SupplierParts for
+    ``(part, supplier)``, post-filter on SKU (the server-side filter
+    has been observed unreliable on this InvenTree version), skip
+    creation when a match already exists.
+
+    Errors during list / create are logged and swallowed — fab-supplier
+    linkage is best-effort metadata. The release artefacts (PCB Part,
+    Assembly, BOM) are the primary outputs and must not fail because of
+    a SupplierPart hiccup.
+    """
+    try:
+        existing = SupplierPart.list(api, part=part.pk, supplier=supplier.pk)
+    # Broad except is intentional — fab linkage is best-effort metadata
+    # per docstring; release artefacts must not fail on this.
+    except Exception as exc:
+        log.warning(
+            "SupplierPart lookup for part=%s supplier=%s failed: %s; "
+            "skipping fab linkage.", part.pk, supplier.pk, exc)
+        return
+    for sp in existing:
+        if str(getattr(sp, "SKU", "") or "") == sku:
+            log.info(
+                "SupplierPart for part=%s supplier=%s SKU=%r already "
+                "exists (pk=%s); skipping.",
+                part.pk, supplier.pk, sku, sp.pk)
+            return
+    try:
+        SupplierPart.create(api, {
+            "part": part.pk,
+            "supplier": supplier.pk,
+            "SKU": sku,
+        })
+        log.info(
+            "Linked SupplierPart for part=%s (%s) -> %s SKU=%r",
+            part.pk, part.name, supplier.name, sku)
+    # Broad except is intentional — fab linkage is best-effort metadata
+    # per docstring; release artefacts must not fail on this.
+    except Exception as exc:
+        log.warning(
+            "SupplierPart create failed for part=%s supplier=%s SKU=%r: "
+            "%s; fab linkage skipped (add manually in the UI if needed).",
+            part.pk, supplier.pk, sku, exc)
+
+
+def create_pcb_part(
+    api: InvenTreeAPI,
+    category: PartCategory,
+    name: str,
+    version: str,
+    image: str | None,
+    *,
+    fab_supplier: Optional[Company] = None,
+) -> Part:
     full_name = f"{name} PCB"
     existing = find_part_by_name_and_revision(api, full_name, version)
     if existing is not None:
         log.info("Reusing existing PCB part '%s' rev %s (pk=%s)",
                  full_name, version, existing.pk)
+        if fab_supplier is not None:
+            _ensure_fab_supplier_part(api, existing, fab_supplier,
+                                      f"{full_name} rev {version}")
         return existing
 
     part = Part.create(api, {
@@ -260,6 +328,9 @@ def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, versio
     if image is not None:
         assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
     log.info("Created PCB part '%s' rev %s (pk=%s)", full_name, version, part.pk)
+    if fab_supplier is not None:
+        _ensure_fab_supplier_part(api, part, fab_supplier,
+                                  f"{full_name} rev {version}")
     return part
 
 
@@ -291,12 +362,17 @@ def create_stencil_part(
     name: str,
     version: str,
     image: str | None = None,
+    *,
+    fab_supplier: Optional[Company] = None,
 ) -> Part:
     full_name = f"{name} SMT Stencil"
     existing = find_part_by_name_and_revision(api, full_name, version)
     if existing is not None:
         log.info("Reusing existing stencil part '%s' rev %s (pk=%s)",
                  full_name, version, existing.pk)
+        if fab_supplier is not None:
+            _ensure_fab_supplier_part(api, existing, fab_supplier,
+                                      f"{full_name} rev {version}")
         return existing
 
     part = Part.create(api, {
@@ -308,6 +384,9 @@ def create_stencil_part(
     if image is not None:
         assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
     log.info("Created stencil part '%s' rev %s (pk=%s)", full_name, version, part.pk)
+    if fab_supplier is not None:
+        _ensure_fab_supplier_part(api, part, fab_supplier,
+                                  f"{full_name} rev {version}")
     return part
 
 
@@ -459,6 +538,21 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--pcb-supplier",
+        default=DEFAULT_PCB_SUPPLIER_NAME,
+        help=(
+            "Company name of the fab that produces the PCB + SMT stencil "
+            f"(default: {DEFAULT_PCB_SUPPLIER_NAME!r}). The Company is "
+            "auto-created if missing. Use --no-pcb-supplier to skip "
+            "SupplierPart linkage entirely."
+        ),
+    )
+    parser.add_argument(
+        "--no-pcb-supplier",
+        dest="pcb_supplier", action="store_const", const=None,
+        help="Skip SupplierPart linkage on PCB + SMT stencil parts.",
+    )
+    parser.add_argument(
         "--dry-run", dest="dry_run", action="store_true",
         help="Simulate the sync flow without InvenTree side-effects. "
              "Prints a Would-CREATE/REUSE/SKIP/FAIL report; exit 1 on FAIL.",
@@ -486,6 +580,12 @@ def main() -> None:
         # fetch). Read-only InvenTree lookups (find_part_by_name_and_revision,
         # BomItem.list, SupplierPart.list in match_supplier_parts) still run —
         # they're how we know whether something WOULD be CREATE vs REUSE.
+        # Note: SupplierPart linkage (--pcb-supplier) is intentionally
+        # not modelled in the dry-run report. The fab-supplier lookup
+        # itself only runs in the non-dry-run branch below (would
+        # auto-create the Company otherwise), so dry-run is fully
+        # side-effect-free with respect to fab linkage. Real-run output
+        # surfaces decisions via the helper's info/warning log lines.
         ensure_parts_exist(api, entries, category_map, reporter=reporter)
         match_supplier_parts(api, entries, reporter=reporter)
 
@@ -543,6 +643,21 @@ def main() -> None:
     # Non-dry-run path: original flow continues below.
     collector = ErrorCollector()
 
+    # Resolve fab supplier now (not before the dry-run gate): get_or_create_supplier
+    # calls Company.create when the named Company is missing, which would violate
+    # the dry-run contract — same bug class as PR #31.
+    fab_supplier: Optional[Company] = None
+    # Normalise the --pcb-supplier value: strip whitespace and treat empty
+    # as opt-out (equivalent to --no-pcb-supplier). Otherwise a stray
+    # `--pcb-supplier " "` would have us POST a Company with a blank name.
+    pcb_supplier_name = (args.pcb_supplier or "").strip() or None
+    if pcb_supplier_name is not None:
+        fab_supplier = get_or_create_supplier(api, name=pcb_supplier_name)
+        if fab_supplier is None:
+            log.error(
+                "Could not get or create fab supplier %r — proceeding "
+                "without SupplierPart linkage.", pcb_supplier_name)
+
     # Create any parts that don't exist in InvenTree yet
     ensure_parts_exist(api, entries, category_map)
 
@@ -553,9 +668,15 @@ def main() -> None:
     assembly_cat = get_category_by_name(api, ASSEMBLY_CATEGORY_NAME)
     stencil_cat  = get_category_by_name(api, STENCIL_CATEGORY_NAME)
 
-    pcb      = create_pcb_part(api, pcb_cat, args.name, args.version, args.pcb_image)
+    pcb      = create_pcb_part(
+        api, pcb_cat, args.name, args.version, args.pcb_image,
+        fab_supplier=fab_supplier,
+    )
     assembly = create_assembly_part(api, assembly_cat, args.name, args.version, args.assembly_image)
-    stencil  = create_stencil_part(api, stencil_cat, args.name, args.version, args.stencil_image)
+    stencil  = create_stencil_part(
+        api, stencil_cat, args.name, args.version, args.stencil_image,
+        fab_supplier=fab_supplier,
+    )
 
     # Link stencil ↔ PCB as related parts (not BOM – the stencil is a
     # production tool, not a consumed component of the assembly).
