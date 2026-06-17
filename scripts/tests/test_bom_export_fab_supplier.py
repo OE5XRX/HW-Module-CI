@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bom_export import main  # noqa: E402 (used by dry-run test below)
@@ -121,9 +123,12 @@ def test_ensure_fab_supplier_part_create_failure_logged_not_raised(caplog):
     )
 
 
-def test_ensure_fab_supplier_part_returns_early_on_first_match():
-    """Existing list has a non-matching SP followed by a matching one →
-    helper still skips create (loop continues to find the match)."""
+def test_ensure_fab_supplier_part_skips_create_when_any_existing_sku_matches():
+    """A list with a non-matching SP followed by a matching one → no create.
+
+    The loop must scan past the non-match and recognise the second entry as
+    a hit (renaming clarifies — "first match" was misleading because the
+    matching SKU is the second item in the list)."""
     api = MagicMock()
     part = _part()
     supplier = _supplier()
@@ -301,4 +306,57 @@ def test_dry_run_does_not_resolve_fab_supplier(tmp_path, monkeypatch):
             pass  # normal exit from main()
 
     # The dry-run path must NOT fetch the fab supplier (would create Company)
+    gos.assert_not_called()
+
+
+@pytest.mark.parametrize("supplier_value", ["", "   ", "\t", "\n"])
+def test_blank_pcb_supplier_treated_as_opt_out(
+    supplier_value, tmp_path, monkeypatch,
+):
+    """--pcb-supplier with empty/whitespace value normalises to opt-out.
+
+    Without this guard a stray `--pcb-supplier " "` would POST a Company
+    with a blank name. Behaviour must match --no-pcb-supplier.
+    """
+    csv_file = tmp_path / "test-bom.csv"
+    csv_file.write_text(
+        "Row,Description,Part,References,Value,Footprint,Quantity Per PCB,Status,Datasheet,LCSC,MOUSER\n"
+        "1,Resistor,R,R1,10k,R_0805_2012Metric,1, ,~,C17414,\n"
+    )
+    pcb_img = tmp_path / "pcb.png"
+    pcb_img.write_text("dummy")
+    asm_img = tmp_path / "asm.png"
+    asm_img.write_text("dummy")
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    monkeypatch.setattr(sys, "argv", [
+        "bom_export.py",
+        "--csv_file", str(csv_file),
+        "--name", "TestBoard",
+        "--version", "1.0",
+        "--pcb_image", str(pcb_img),
+        "--assembly_image", str(asm_img),
+        "--pcb-supplier", supplier_value,
+    ])
+
+    with patch("bom_export.InvenTreeAPI"), \
+         patch("bom_export.ensure_parts_exist"), \
+         patch("bom_export.match_supplier_parts"), \
+         patch("bom_export.find_part_by_name_and_revision", return_value=None), \
+         patch("bom_export.get_category_by_name"), \
+         patch("bom_export.create_pcb_part"), \
+         patch("bom_export.create_assembly_part"), \
+         patch("bom_export.create_stencil_part"), \
+         patch("bom_export.ensure_related_parts"), \
+         patch("bom_export.populate_bom"), \
+         patch("bom_export.generate_cost_report"), \
+         patch("bom_export.get_or_create_supplier") as gos, \
+         patch("bom_export.load_category_map", return_value={}):
+        try:
+            main()
+        except SystemExit:
+            pass
+
+    # Empty/whitespace name must not trigger Company auto-creation
     gos.assert_not_called()

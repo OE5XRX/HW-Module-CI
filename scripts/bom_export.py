@@ -647,12 +647,16 @@ def main() -> None:
     # calls Company.create when the named Company is missing, which would violate
     # the dry-run contract — same bug class as PR #31.
     fab_supplier: Optional[Company] = None
-    if args.pcb_supplier is not None:
-        fab_supplier = get_or_create_supplier(api, name=args.pcb_supplier)
+    # Normalise the --pcb-supplier value: strip whitespace and treat empty
+    # as opt-out (equivalent to --no-pcb-supplier). Otherwise a stray
+    # `--pcb-supplier " "` would have us POST a Company with a blank name.
+    pcb_supplier_name = (args.pcb_supplier or "").strip() or None
+    if pcb_supplier_name is not None:
+        fab_supplier = get_or_create_supplier(api, name=pcb_supplier_name)
         if fab_supplier is None:
             log.error(
                 "Could not get or create fab supplier %r — proceeding "
-                "without SupplierPart linkage.", args.pcb_supplier)
+                "without SupplierPart linkage.", pcb_supplier_name)
 
     # Create any parts that don't exist in InvenTree yet
     ensure_parts_exist(api, entries, category_map)
