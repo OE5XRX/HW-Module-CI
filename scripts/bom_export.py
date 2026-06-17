@@ -19,7 +19,7 @@ import sys
 from typing import Optional
 
 from inventree.api import InvenTreeAPI
-from inventree.company import SupplierPart
+from inventree.company import Company, SupplierPart
 from inventree.part import BomItem, Part, PartCategory
 
 from inventree_sync import BomEntry, ensure_parts_exist
@@ -242,6 +242,55 @@ def match_supplier_parts(
 # ---------------------------------------------------------------------------
 # PCB + assembly + stencil creation
 # ---------------------------------------------------------------------------
+
+def _ensure_fab_supplier_part(
+    api: InvenTreeAPI,
+    part: Part,
+    supplier: Company,
+    sku: str,
+) -> None:
+    """Idempotently link a Part to a fab Supplier with a derived SKU.
+
+    Same defensive pattern as ``ensure_supplier_parts`` in
+    ``inventree_sync/client.py``: list existing SupplierParts for
+    ``(part, supplier)``, post-filter on SKU (the server-side filter
+    has been observed unreliable on this InvenTree version), skip
+    creation when a match already exists.
+
+    Errors during list / create are logged and swallowed — fab-supplier
+    linkage is best-effort metadata. The release artefacts (PCB Part,
+    Assembly, BOM) are the primary outputs and must not fail because of
+    a SupplierPart hiccup.
+    """
+    try:
+        existing = SupplierPart.list(api, part=part.pk, supplier=supplier.pk)
+    except Exception as exc:
+        log.warning(
+            "SupplierPart lookup for part=%s supplier=%s failed: %s; "
+            "skipping fab linkage.", part.pk, supplier.pk, exc)
+        return
+    for sp in existing:
+        if str(getattr(sp, "SKU", "") or "") == sku:
+            log.info(
+                "SupplierPart for part=%s supplier=%s SKU=%r already "
+                "exists (pk=%s); skipping.",
+                part.pk, supplier.pk, sku, sp.pk)
+            return
+    try:
+        SupplierPart.create(api, {
+            "part": part.pk,
+            "supplier": supplier.pk,
+            "SKU": sku,
+        })
+        log.info(
+            "Linked SupplierPart for part=%s (%s) → %s SKU=%r",
+            part.pk, part.name, supplier.name, sku)
+    except Exception as exc:
+        log.warning(
+            "SupplierPart create failed for part=%s supplier=%s SKU=%r: "
+            "%s; fab linkage skipped (add manually in the UI if needed).",
+            part.pk, supplier.pk, sku, exc)
+
 
 def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, version: str, image: str | None) -> Part:
     full_name = f"{name} PCB"
