@@ -569,14 +569,6 @@ def main() -> None:
     api = InvenTreeAPI()
     reporter = DryRunReporter() if args.dry_run else None
 
-    fab_supplier: Optional[Company] = None
-    if args.pcb_supplier is not None:
-        fab_supplier = get_or_create_supplier(api, name=args.pcb_supplier)
-        if fab_supplier is None:
-            log.error(
-                "Could not get or create fab supplier %r — proceeding "
-                "without SupplierPart linkage.", args.pcb_supplier)
-
     entries = load_bom(args.csv_file)
 
     # Load category map (custom file or built-in default)
@@ -588,11 +580,12 @@ def main() -> None:
         # fetch). Read-only InvenTree lookups (find_part_by_name_and_revision,
         # BomItem.list, SupplierPart.list in match_supplier_parts) still run —
         # they're how we know whether something WOULD be CREATE vs REUSE.
-        # Note: SupplierPart linkage (--pcb-supplier) is NOT modelled in
-        # the dry-run report. The helper itself is best-effort
-        # (failures are logged, never raised), so dry-run silence is
-        # acceptable. Real-run output covers it via the helper's
-        # info/warning log lines.
+        # Note: SupplierPart linkage (--pcb-supplier) is intentionally
+        # not modelled in the dry-run report. The fab-supplier lookup
+        # itself only runs in the non-dry-run branch below (would
+        # auto-create the Company otherwise), so dry-run is fully
+        # side-effect-free with respect to fab linkage. Real-run output
+        # surfaces decisions via the helper's info/warning log lines.
         ensure_parts_exist(api, entries, category_map, reporter=reporter)
         match_supplier_parts(api, entries, reporter=reporter)
 
@@ -649,6 +642,17 @@ def main() -> None:
 
     # Non-dry-run path: original flow continues below.
     collector = ErrorCollector()
+
+    # Resolve fab supplier now (not before the dry-run gate): get_or_create_supplier
+    # calls Company.create when the named Company is missing, which would violate
+    # the dry-run contract — same bug class as PR #31.
+    fab_supplier: Optional[Company] = None
+    if args.pcb_supplier is not None:
+        fab_supplier = get_or_create_supplier(api, name=args.pcb_supplier)
+        if fab_supplier is None:
+            log.error(
+                "Could not get or create fab supplier %r — proceeding "
+                "without SupplierPart linkage.", args.pcb_supplier)
 
     # Create any parts that don't exist in InvenTree yet
     ensure_parts_exist(api, entries, category_map)

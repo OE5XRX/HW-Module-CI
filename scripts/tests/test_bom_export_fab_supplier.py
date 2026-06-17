@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from bom_export import main  # noqa: E402 (used by dry-run test below)
+
 from bom_export import _ensure_fab_supplier_part  # noqa: E402
 
 
@@ -256,3 +258,47 @@ def test_create_assembly_part_does_not_attach_fab_supplier():
         create_assembly_part(api, cat, "v0.1 BusBoard", "0.1", "/tmp/img.png")
 
     helper.assert_not_called()
+
+
+def test_dry_run_does_not_resolve_fab_supplier(tmp_path, monkeypatch):
+    """--dry-run must NOT call get_or_create_supplier (would auto-create Company).
+
+    Same bug class as PR #31 for the order-importer: any write-on-missing
+    helper called before the dry-run gate violates the contract.
+    """
+    csv_file = tmp_path / "test-bom.csv"
+    csv_file.write_text(
+        "Row,Description,Part,References,Value,Footprint,Quantity Per PCB,Status,Datasheet,LCSC,MOUSER\n"
+        "1,Resistor,R,R1,10k,R_0805_2012Metric,1, ,~,C17414,\n"
+    )
+    pcb_img = tmp_path / "pcb.png"
+    pcb_img.write_text("dummy")
+    asm_img = tmp_path / "asm.png"
+    asm_img.write_text("dummy")
+    monkeypatch.setenv("INVENTREE_API_HOST", "http://localhost")
+    monkeypatch.setenv("INVENTREE_API_TOKEN", "deadbeef")
+
+    monkeypatch.setattr(sys, "argv", [
+        "bom_export.py",
+        "--csv_file", str(csv_file),
+        "--name", "TestBoard",
+        "--version", "1.0",
+        "--pcb_image", str(pcb_img),
+        "--assembly_image", str(asm_img),
+        "--pcb-supplier", "NewFab",
+        "--dry-run",
+    ])
+
+    with patch("bom_export.InvenTreeAPI"), \
+         patch("bom_export.ensure_parts_exist"), \
+         patch("bom_export.match_supplier_parts"), \
+         patch("bom_export.find_part_by_name_and_revision", return_value=None), \
+         patch("bom_export.get_or_create_supplier") as gos, \
+         patch("bom_export.load_category_map", return_value={}):
+        try:
+            main()
+        except SystemExit:
+            pass  # normal exit from main()
+
+    # The dry-run path must NOT fetch the fab supplier (would create Company)
+    gos.assert_not_called()
