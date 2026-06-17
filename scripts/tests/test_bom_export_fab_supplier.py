@@ -153,3 +153,106 @@ def test_ensure_fab_supplier_part_tolerates_none_sku_on_existing():
 
     # SKU=None coerced to "", doesn't match target → create proceeds
     SP.create.assert_called_once()
+
+
+from bom_export import create_pcb_part, create_stencil_part, create_assembly_part  # noqa: E402
+
+
+def _category(pk=10):
+    c = MagicMock()
+    c.pk = pk
+    return c
+
+
+def test_create_pcb_part_attaches_fab_supplier_on_new_part():
+    """New PCB Part → helper called with SKU derived from name+revision."""
+    api = MagicMock()
+    cat = _category()
+    new_part = _part(pk=1291, name="v0.1 BusBoard PCB")
+    supplier = _supplier(pk=381, name="JLCPCB")
+
+    with patch("bom_export.find_part_by_name_and_revision", return_value=None), \
+         patch("bom_export.Part") as PART, \
+         patch("bom_export._ensure_fab_supplier_part") as helper:
+        PART.create.return_value = new_part
+        new_part.uploadImage = MagicMock(return_value=True)
+
+        result = create_pcb_part(api, cat, "v0.1 BusBoard", "0.1",
+                                 "/tmp/img.png", fab_supplier=supplier)
+
+    assert result is new_part
+    helper.assert_called_once_with(
+        api, new_part, supplier, "v0.1 BusBoard PCB rev 0.1",
+    )
+
+
+def test_create_pcb_part_attaches_fab_supplier_on_reuse():
+    """Existing PCB Part → helper STILL called (retroactive linkage)."""
+    api = MagicMock()
+    cat = _category()
+    existing = _part(pk=999, name="v0.1 BusBoard PCB")
+    supplier = _supplier()
+
+    with patch("bom_export.find_part_by_name_and_revision",
+               return_value=existing), \
+         patch("bom_export._ensure_fab_supplier_part") as helper:
+        result = create_pcb_part(api, cat, "v0.1 BusBoard", "0.1",
+                                 "/tmp/img.png", fab_supplier=supplier)
+
+    assert result is existing
+    helper.assert_called_once_with(
+        api, existing, supplier, "v0.1 BusBoard PCB rev 0.1",
+    )
+
+
+def test_create_pcb_part_skips_fab_supplier_when_none():
+    """fab_supplier=None → helper NOT called."""
+    api = MagicMock()
+    cat = _category()
+    new_part = _part(pk=1291)
+
+    with patch("bom_export.find_part_by_name_and_revision", return_value=None), \
+         patch("bom_export.Part") as PART, \
+         patch("bom_export._ensure_fab_supplier_part") as helper:
+        PART.create.return_value = new_part
+        new_part.uploadImage = MagicMock(return_value=True)
+        create_pcb_part(api, cat, "v0.1 BusBoard", "0.1",
+                        "/tmp/img.png", fab_supplier=None)
+
+    helper.assert_not_called()
+
+
+def test_create_stencil_part_attaches_fab_supplier_on_new_part():
+    """Stencil branch: SKU uses 'SMT Stencil' subtype."""
+    api = MagicMock()
+    cat = _category()
+    new_part = _part(pk=1293, name="v0.1 BusBoard SMT Stencil")
+    supplier = _supplier()
+
+    with patch("bom_export.find_part_by_name_and_revision", return_value=None), \
+         patch("bom_export.Part") as PART, \
+         patch("bom_export._ensure_fab_supplier_part") as helper:
+        PART.create.return_value = new_part
+        new_part.uploadImage = MagicMock(return_value=True)
+        create_stencil_part(api, cat, "v0.1 BusBoard", "0.1",
+                            "/tmp/img.png", fab_supplier=supplier)
+
+    helper.assert_called_once_with(
+        api, new_part, supplier, "v0.1 BusBoard SMT Stencil rev 0.1",
+    )
+
+
+def test_create_assembly_part_does_not_attach_fab_supplier():
+    """Assembly Module never gets supplier (built in-house)."""
+    api = MagicMock()
+    cat = _category()
+    new_part = _part(pk=1292, name="v0.1 BusBoard Module")
+
+    with patch("bom_export.find_part_by_name_and_revision", return_value=None), \
+         patch("bom_export.Part") as PART, \
+         patch("bom_export._ensure_fab_supplier_part") as helper:
+        PART.create.return_value = new_part
+        new_part.uploadImage = MagicMock(return_value=True)
+        create_assembly_part(api, cat, "v0.1 BusBoard", "0.1", "/tmp/img.png")
+
+    helper.assert_not_called()

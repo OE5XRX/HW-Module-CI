@@ -296,12 +296,23 @@ def _ensure_fab_supplier_part(
             part.pk, supplier.pk, sku, exc)
 
 
-def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, version: str, image: str | None) -> Part:
+def create_pcb_part(
+    api: InvenTreeAPI,
+    category: PartCategory,
+    name: str,
+    version: str,
+    image: str | None,
+    *,
+    fab_supplier: Optional[Company] = None,
+) -> Part:
     full_name = f"{name} PCB"
     existing = find_part_by_name_and_revision(api, full_name, version)
     if existing is not None:
         log.info("Reusing existing PCB part '%s' rev %s (pk=%s)",
                  full_name, version, existing.pk)
+        if fab_supplier is not None:
+            _ensure_fab_supplier_part(api, existing, fab_supplier,
+                                      f"{full_name} rev {version}")
         return existing
 
     part = Part.create(api, {
@@ -313,6 +324,9 @@ def create_pcb_part(api: InvenTreeAPI, category: PartCategory, name: str, versio
     if image is not None:
         assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
     log.info("Created PCB part '%s' rev %s (pk=%s)", full_name, version, part.pk)
+    if fab_supplier is not None:
+        _ensure_fab_supplier_part(api, part, fab_supplier,
+                                  f"{full_name} rev {version}")
     return part
 
 
@@ -344,12 +358,17 @@ def create_stencil_part(
     name: str,
     version: str,
     image: str | None = None,
+    *,
+    fab_supplier: Optional[Company] = None,
 ) -> Part:
     full_name = f"{name} SMT Stencil"
     existing = find_part_by_name_and_revision(api, full_name, version)
     if existing is not None:
         log.info("Reusing existing stencil part '%s' rev %s (pk=%s)",
                  full_name, version, existing.pk)
+        if fab_supplier is not None:
+            _ensure_fab_supplier_part(api, existing, fab_supplier,
+                                      f"{full_name} rev {version}")
         return existing
 
     part = Part.create(api, {
@@ -361,6 +380,9 @@ def create_stencil_part(
     if image is not None:
         assert part.uploadImage(image) is not None, f"Image upload failed: {image}"
     log.info("Created stencil part '%s' rev %s (pk=%s)", full_name, version, part.pk)
+    if fab_supplier is not None:
+        _ensure_fab_supplier_part(api, part, fab_supplier,
+                                  f"{full_name} rev {version}")
     return part
 
 
