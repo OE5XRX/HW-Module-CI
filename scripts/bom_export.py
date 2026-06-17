@@ -264,6 +264,8 @@ def _ensure_fab_supplier_part(
     """
     try:
         existing = SupplierPart.list(api, part=part.pk, supplier=supplier.pk)
+    # Broad except is intentional — fab linkage is best-effort metadata
+    # per docstring; release artefacts must not fail on this.
     except Exception as exc:
         log.warning(
             "SupplierPart lookup for part=%s supplier=%s failed: %s; "
@@ -283,8 +285,10 @@ def _ensure_fab_supplier_part(
             "SKU": sku,
         })
         log.info(
-            "Linked SupplierPart for part=%s (%s) → %s SKU=%r",
+            "Linked SupplierPart for part=%s (%s) -> %s SKU=%r",
             part.pk, part.name, supplier.name, sku)
+    # Broad except is intentional — fab linkage is best-effort metadata
+    # per docstring; release artefacts must not fail on this.
     except Exception as exc:
         log.warning(
             "SupplierPart create failed for part=%s supplier=%s SKU=%r: "
