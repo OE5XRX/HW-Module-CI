@@ -25,7 +25,7 @@ from inventree.part import BomItem, Part, PartCategory
 from inventree_sync import BomEntry, ensure_parts_exist
 from inventree_sync.attachments import attach_kibot_outputs
 from inventree_sync.categories import load_category_map
-from inventree_sync.client import ensure_related_parts, find_part_by_name_and_revision
+from inventree_sync.client import ensure_related_parts, find_part_by_name_and_revision, get_or_create_supplier
 from inventree_sync.cost_report import generate_cost_report
 from inventree_sync.dry_run import DryRunReporter
 
@@ -36,6 +36,10 @@ log = logging.getLogger(__name__)
 PCB_CATEGORY_NAME      = "Printed-Circuit Boards"
 ASSEMBLY_CATEGORY_NAME = "PCBA"
 STENCIL_CATEGORY_NAME  = "SMT Stencil"
+
+# Default fab supplier name. CLI --pcb-supplier overrides per-run; the
+# Company is auto-created via get_or_create_supplier if missing.
+DEFAULT_PCB_SUPPLIER_NAME = "JLCPCB"
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +538,21 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--pcb-supplier",
+        default=DEFAULT_PCB_SUPPLIER_NAME,
+        help=(
+            "Company name of the fab that produces the PCB + SMT stencil "
+            f"(default: {DEFAULT_PCB_SUPPLIER_NAME!r}). The Company is "
+            "auto-created if missing. Use --no-pcb-supplier to skip "
+            "SupplierPart linkage entirely."
+        ),
+    )
+    parser.add_argument(
+        "--no-pcb-supplier",
+        dest="pcb_supplier", action="store_const", const=None,
+        help="Skip SupplierPart linkage on PCB + SMT stencil parts.",
+    )
+    parser.add_argument(
         "--dry-run", dest="dry_run", action="store_true",
         help="Simulate the sync flow without InvenTree side-effects. "
              "Prints a Would-CREATE/REUSE/SKIP/FAIL report; exit 1 on FAIL.",
@@ -550,6 +569,14 @@ def main() -> None:
     api = InvenTreeAPI()
     reporter = DryRunReporter() if args.dry_run else None
 
+    fab_supplier: Optional[Company] = None
+    if args.pcb_supplier is not None:
+        fab_supplier = get_or_create_supplier(api, name=args.pcb_supplier)
+        if fab_supplier is None:
+            log.error(
+                "Could not get or create fab supplier %r — proceeding "
+                "without SupplierPart linkage.", args.pcb_supplier)
+
     entries = load_bom(args.csv_file)
 
     # Load category map (custom file or built-in default)
@@ -561,6 +588,11 @@ def main() -> None:
         # fetch). Read-only InvenTree lookups (find_part_by_name_and_revision,
         # BomItem.list, SupplierPart.list in match_supplier_parts) still run —
         # they're how we know whether something WOULD be CREATE vs REUSE.
+        # Note: SupplierPart linkage (--pcb-supplier) is NOT modelled in
+        # the dry-run report. The helper itself is best-effort
+        # (failures are logged, never raised), so dry-run silence is
+        # acceptable. Real-run output covers it via the helper's
+        # info/warning log lines.
         ensure_parts_exist(api, entries, category_map, reporter=reporter)
         match_supplier_parts(api, entries, reporter=reporter)
 
@@ -628,9 +660,15 @@ def main() -> None:
     assembly_cat = get_category_by_name(api, ASSEMBLY_CATEGORY_NAME)
     stencil_cat  = get_category_by_name(api, STENCIL_CATEGORY_NAME)
 
-    pcb      = create_pcb_part(api, pcb_cat, args.name, args.version, args.pcb_image)
+    pcb      = create_pcb_part(
+        api, pcb_cat, args.name, args.version, args.pcb_image,
+        fab_supplier=fab_supplier,
+    )
     assembly = create_assembly_part(api, assembly_cat, args.name, args.version, args.assembly_image)
-    stencil  = create_stencil_part(api, stencil_cat, args.name, args.version, args.stencil_image)
+    stencil  = create_stencil_part(
+        api, stencil_cat, args.name, args.version, args.stencil_image,
+        fab_supplier=fab_supplier,
+    )
 
     # Link stencil ↔ PCB as related parts (not BOM – the stencil is a
     # production tool, not a consumed component of the assembly).
