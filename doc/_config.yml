@@ -3,7 +3,8 @@ description: Amateurfunkclub für Remote Stationen
 
 theme: just-the-docs
 favicon_ico: /favicon.ico
-logo: "/Icon.png"
+color_scheme: oe5xrx
+logo: "/assets/oe5xrx-logo.svg"
 
 mermaid:
   version: "11.3.0"

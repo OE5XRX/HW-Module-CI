@@ -62,3 +62,8 @@ runs:
         name: ${{ steps.detect.outputs.name }}
         EOF
         echo "Staged Jekyll assets and wrote doc/_data/project.yml"
+
+    - name: Apply OE5XRX brand layer
+      uses: OE5XRX/branding/.github/actions/apply-brand@v0.2.5
+      with:
+        dest: doc

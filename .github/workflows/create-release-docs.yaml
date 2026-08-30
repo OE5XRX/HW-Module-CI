@@ -87,6 +87,7 @@ jobs:
               \( -name '*.md' -o -name '*.png' -o -name '*.jpg' \
                  -o -name '*.jpeg' -o -name '*.svg' -o -name '*.gif' \) \
               ! -name 'Icon.png' \
+              ! -name 'apple-touch-icon.png' \
               -exec cp {} output/ \;
           fi
 
