@@ -1,0 +1,45 @@
+version: 2
+
+updates:
+  # Central reusable workflows consumed by all HW-Module-* repos via @main.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Europe/Vienna"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+  # KiBot / InvenTree-sync Python tooling (scripts/requirements*.txt).
+  - package-ecosystem: "pip"
+    directory: "/scripts"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Europe/Vienna"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "pip"
+      include: "scope"
+    groups:
+      python:
+        patterns:
+          - "*"
+
+  # Jekyll doc toolchain (doc/Gemfile) shared into consumer repos.
+  - package-ecosystem: "bundler"
+    directory: "/doc"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Europe/Vienna"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "bundler"
+      include: "scope"
