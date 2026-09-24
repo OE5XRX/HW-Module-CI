@@ -6,7 +6,6 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-      day: "monday"
       time: "04:00"
       timezone: "Europe/Vienna"
     open-pull-requests-limit: 5
@@ -36,7 +35,6 @@ updates:
     directory: "/doc"
     schedule:
       interval: "monthly"
-      day: "monday"
       time: "04:00"
       timezone: "Europe/Vienna"
     open-pull-requests-limit: 3
