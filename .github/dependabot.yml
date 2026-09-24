@@ -6,7 +6,6 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-      day: "monday"
       time: "04:00"
       timezone: "Europe/Vienna"
     open-pull-requests-limit: 5
@@ -30,16 +29,3 @@ updates:
       python:
         patterns:
           - "*"
-
-  # Jekyll doc toolchain (doc/Gemfile) shared into consumer repos.
-  - package-ecosystem: "bundler"
-    directory: "/doc"
-    schedule:
-      interval: "monthly"
-      day: "monday"
-      time: "04:00"
-      timezone: "Europe/Vienna"
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "bundler"
-      include: "scope"
