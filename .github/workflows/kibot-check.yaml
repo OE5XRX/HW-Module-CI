@@ -18,13 +18,13 @@ jobs:
           PROJECT: ${{ steps.setup.outputs.project-name }}
         run: |
           set -euo pipefail
-          # Direct docker invocation bypasses INTI-CMNB/KiBot@v2_k9 which
+          # Direct docker invocation bypasses INTI-CMNB/KiBot@v2_k10 which
           # currently fails to download because KiBot's repo has Git-LFS
           # reference test images and the LFS bandwidth is exhausted.
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/workdir" \
             -w /workdir \
-            ghcr.io/inti-cmnb/kicad9_auto_full:1.8.5-7_k9.0.7_d13.2_b4.2.4LTS \
+            ghcr.io/inti-cmnb/kicad10_auto_full:1.9.1-2_k10.0.5_d13.2_b4.2.4LTS \
             kibot \
               -c _ci/kibot/test.kibot.yaml \
               -d output \
