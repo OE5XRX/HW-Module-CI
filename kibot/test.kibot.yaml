@@ -7,6 +7,21 @@ global:
 preflight:
   erc:
     warnings_as_errors: true
-  drc: true
+    filters:
+      # KiCad 10 added a footprint-filter check. Our boards deliberately use
+      # project footprints (PRJ:PCN10-..., PRJ:M49S-SMD) on generic KiCad
+      # symbols whose filters only list stock libraries.
+      - filter: 'Project footprints on generic symbols (new in KiCad 10)'
+        error: 'footprint_filter'
+      # KiCad 10 ships updated stock symbol libraries, so the symbol copies
+      # cached in our schematics no longer match them byte for byte. The
+      # cached copy is what the board uses; this is library drift, not a
+      # design error.
+      - filter: 'Cached symbols differ from KiCad 10 stock libraries'
+        error: 'lib_symbol_mismatch'
+  drc:
+    filters:
+      - filter: 'Project footprints on generic symbols (new in KiCad 10)'
+        error: 'footprint_filters_mismatch'
   update_xml: false
   check_zone_fills: true
